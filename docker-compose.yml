@@ -11,16 +11,19 @@ services:
     container_name: backend
     ports:
       - "8080:8080"
+    env_file:
+      - .env
     environment:
-      - SPRING_DATASOURCE_URL=${SPRING_DATASOURCE_URL}
-      - SPRING_DATASOURCE_USERNAME=${SPRING_DATASOURCE_USERNAME}
-      - SPRING_DATASOURCE_PASSWORD=${SPRING_DATASOURCE_PASSWORD}
+      - DB_URL=${DB_URL}
+      - DB_USERNAME=${MARIADB_USER}
+      - DB_PASSWORD=${MARIADB_PASSWORD}
+      - JWT_SECRET=${JWT_SECRET}
       - JAVA_OPTS=-Xms256m -Xmx768m -Xss256k -XX:MaxMetaspaceSize=128m -XX:+UseSerialGC
       - SPRING_PROFILES_ACTIVE=prod
     depends_on:
       mariadb:
         condition: service_healthy
-    restart: unless-stopped
+    restart: on-failure
     deploy:
       resources:
         limits:
@@ -33,24 +36,19 @@ services:
   mariadb:
     image: mariadb:10.11
     container_name: mariadb
+    env_file:
+      - .env
     environment:
-      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
-      MARIADB_DATABASE: ${MARIADB_DATABASE}
-      MARIADB_USER: ${MARIADB_USER}
-      MARIADB_PASSWORD: ${MARIADB_PASSWORD}
+      - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD}
+      - MARIADB_DATABASE=${MARIADB_DATABASE}
+      - MARIADB_USER=${MARIADB_USER}
+      - MARIADB_PASSWORD=${MARIADB_PASSWORD}
     volumes:
       - ./maria_db/data:/var/lib/mysql
-    # Порт закрыт для внешней сети ради безопасности,
-    # если нужен доступ извне - раскомментируй строку ниже
-    ports:
-      - "127.0.0.1:3306:3306"
     command: >
       --performance_schema=0 
       --innodb_buffer_pool_size=128M 
-      --max_connections=50 
-      --key_buffer_size=16M 
-      --query_cache_size=0 
-      --query_cache_type=0
+      --max_connections=50
     healthcheck:
       test:
         [
@@ -61,22 +59,15 @@ services:
           "localhost",
           "-u",
           "root",
-          "-p$${MARIADB_ROOT_PASSWORD}",
+          "-p${MARIADB_ROOT_PASSWORD}",
         ]
-      interval: 10s
+      interval: 5s
       timeout: 5s
       retries: 5
-      start_period: 30s
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "0.70"
-          memory: 400M
-    logging: *default-logging
+      start_period: 15s
     networks:
       - kamp-network
 
-networks: # <-- Исправлен уровень отступа
+networks:
   kamp-network:
     driver: bridge

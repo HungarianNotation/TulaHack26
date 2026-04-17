@@ -73,3 +73,5 @@ Thumbs.db
 
 # MariaDB data
 maria_db/data/
+
+.env
