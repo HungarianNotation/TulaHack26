@@ -10,6 +10,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
+import com.example.demo.DTO.PythonResponse;
+import com.example.demo.DTO.PythonDetailedSegment;
 
 import java.util.Map;
 
@@ -23,50 +25,42 @@ public class TranscriptionService {
     private final RestTemplate restTemplate = new RestTemplate(); // Для вызова Python
 
     @Async("transcriptionTaskExecutor")
-    public void processAudioAsync(Long callRecordId) {
-        log.info("Начат асинхронный процесс обработки записи ID: {}", callRecordId);
+public void processAudioAsync(Long callRecordId) {
+    CallRecord record = callRecordRepository.findById(callRecordId).orElseThrow();
+    record.setStatus(CallRecord.RecordStatus.TRANSCRIBING);
+    callRecordRepository.save(record);
 
-        CallRecord record = callRecordRepository.findById(callRecordId).orElse(null);
-        if (record == null) return;
+    try {
+        String pythonUrl = "http://python-stt:8000/transcribe";
+        Map<String, String> request = Map.of("file_path", record.getOriginalAudioPath());
 
-        record.setStatus(CallRecord.RecordStatus.TRANSCRIBING);
-        callRecordRepository.save(record);
+        // 1. Вызываем Python и получаем полный анализ
+        PythonResponse response = restTemplate.postForObject(pythonUrl, request, PythonResponse.class);
 
-        try {
-            // 1. URL Python-микросервиса внутри сети Docker
-            String pythonUrl = "http://python-stt:8000/transcribe";
+        if (response != null) {
+            // 2. Обновляем путь к анонимизированному аудио
+            record.setRedactedAudioPath(response.redacted_audio_path());
             
-            // Отправляем абсолютный путь к файлу (Docker Volumes синхронизируют пути)
-            Map<String, String> request = Map.of("file_path", record.getOriginalAudioPath());
-
-            log.info("Отправка запроса в Python STT: {}", request);
-            
-            // 2. Отправляем и ждем JSON
-            PythonSegment[] segments = restTemplate.postForObject(pythonUrl, request, PythonSegment[].class);
-
-            // 3. Сохраняем результат
-            if (segments != null) {
-                for (PythonSegment s : segments) {
-                    TranscriptSegment ts = TranscriptSegment.builder()
-                            .callRecord(record)
-                            .speakerId(s.speaker())
-                            .startTime(s.start())
-                            .endTime(s.end())
-                            .originalText(s.text())
-                            .containsPii(false) // Потом добавишь логику ПДн
-                            .build();
-                    segmentRepository.save(ts);
-                }
+            // 3. Сохраняем сегменты с типами ПДн
+            for (PythonDetailedSegment s : response.segments()) {
+                TranscriptSegment ts = TranscriptSegment.builder()
+                        .callRecord(record)
+                        .speakerId(s.speaker())
+                        .startTime(s.start())
+                        .endTime(s.end())
+                        .originalText(s.original_text())
+                        .redactedText(s.redacted_text())
+                        .containsPii(s.contains_pii())
+                        // Можно добавить поле PiiTypes в БД, если нужно
+                        .build();
+                segmentRepository.save(ts);
             }
-
-            record.setStatus(CallRecord.RecordStatus.COMPLETED);
-            record.setDurationSeconds(120); // Заглушка, можно считать длину
-            log.info("Обработка записи ID: {} успешно завершена", callRecordId);
-
-        } catch (Exception e) {
-            log.error("STT Error при обработке ID: {}", callRecordId, e);
-            record.setStatus(CallRecord.RecordStatus.ERROR);
         }
-        callRecordRepository.save(record);
+
+        record.setStatus(CallRecord.RecordStatus.COMPLETED);
+    } catch (Exception e) {
+        record.setStatus(CallRecord.RecordStatus.ERROR);
     }
+    callRecordRepository.save(record);
+}
 }

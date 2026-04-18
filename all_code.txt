@@ -1,3 +1,165 @@
+File: ./python-stt/main.py
+import os
+import json
+import wave
+import re
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from pydub import AudioSegment
+from vosk import Model, KaldiRecognizer
+
+# Для поиска имен и адресов (PII)
+from natasha import (
+    Segmenter, MorphVocab, NewsEmbedding, 
+    NewsNERTagger, Doc  # Исправлено имя NewsNERTagger
+)
+
+app = FastAPI()
+
+# Инициализация Vosk
+MODEL_PATH = "/app/vosk-model"
+model = None
+if os.path.exists(MODEL_PATH):
+    model = Model(MODEL_PATH)
+else:
+    print(f"Ошибка: Модель не найдена в {MODEL_PATH}")
+
+# Инициализация Natasha (NLP)
+segmenter = Segmenter()
+morph_vocab = MorphVocab()
+emb = NewsEmbedding()
+ner_tagger = NewsNERTagger(emb) # Исправлено имя
+
+class TranscribeRequest(BaseModel):
+    file_path: str
+
+def analyze_pii(text):
+    """Ищет ПДн и возвращает список найденных сущностей"""
+    found_pii = []
+    
+    # 1. Регулярные выражения (ИНН, СНИЛС, Телефоны, Паспорт)
+    patterns = {
+        "PHONE": r"(\+7|8|7)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}",
+        "PASSPORT": r"\b\d{4}\s\d{6}\b",
+        "INN": r"\b\d{10}\b|\b\d{12}\b",
+        "SNILS": r"\b\d{3}-\d{3}-\d{3}\s\d{2}\b",
+        "EMAIL": r"[\w\.-]+@[\w\.-]+\.\w+"
+    }
+    
+    for p_type, p_regex in patterns.items():
+        matches = re.finditer(p_regex, text)
+        for m in matches:
+            found_pii.append({"type": p_type, "value": m.group()})
+
+    # 2. Natasha NER (Имена, Адреса)
+    doc = Doc(text)
+    doc.segment(segmenter)
+    doc.tag_ner(ner_tagger)
+    
+    for span in doc.spans:
+        if span.type == 'PER':
+            found_pii.append({"type": "NAME", "value": span.text})
+        elif span.type == 'LOC':
+            found_pii.append({"type": "ADDRESS", "value": span.text})
+            
+    return found_pii
+
+@app.post("/transcribe")
+async def transcribe(request: TranscribeRequest):
+    if not model:
+        raise HTTPException(status_code=500, detail="Vosk модель не загружена")
+
+    if not os.path.exists(request.file_path):
+        raise HTTPException(status_code=404, detail=f"Файл не найден: {request.file_path}")
+
+    try:
+        # 1. Загрузка аудио (AudioSegment сам определит m4a, mp3, wav через ffmpeg)
+        audio = AudioSegment.from_file(request.file_path)
+        
+        # Сохраняем временную копию в PCM для Vosk
+        temp_wav = "/tmp/to_vosk.wav"
+        audio.set_frame_rate(16000).set_channels(1).set_sample_width(2).export(temp_wav, format="wav")
+
+        # 2. Распознавание Vosk
+        wf = wave.open(temp_wav, "rb")
+        rec = KaldiRecognizer(model, wf.getframerate())
+        rec.SetWords(True) 
+
+        results = []
+        while True:
+            data = wf.readframes(4000)
+            if len(data) == 0: break
+            if rec.AcceptWaveform(data):
+                res = json.loads(rec.Result())
+                if 'result' in res: results.extend(res['result'])
+        
+        final_res = json.loads(rec.FinalResult())
+        if 'result' in final_res: results.extend(final_res['result'])
+        wf.close()
+
+        # 3. Обработка сегментов и "запикивание"
+        segments = []
+        # Важно: работаем с копией для редактирования
+        redacted_audio = audio 
+        
+        # Группируем слова для контекста NER
+        chunk_size = 7
+        for i in range(0, len(results), chunk_size):
+            chunk = results[i:i + chunk_size]
+            original_text = " ".join([w['word'] for w in chunk])
+            
+            pii_list = analyze_pii(original_text)
+            has_pii = len(pii_list) > 0
+            
+            start_time = chunk[0]['start']
+            end_time = chunk[-1]['end']
+            
+            redacted_text = original_text
+            if has_pii:
+                redacted_text = "[ДАННЫЕ УДАЛЕНЫ]"
+                
+                # Переводим секунды в миллисекунды для pydub
+                start_ms = int(start_time * 1000)
+                end_ms = int(end_time * 1000)
+                
+                # Накладываем тишину на этот участок
+                silence = AudioSegment.silent(duration=(end_ms - start_ms))
+                redacted_audio = redacted_audio[:start_ms] + silence + redacted_audio[end_ms:]
+
+            segments.append({
+                "speaker": 1,
+                "start": start_time,
+                "end": end_time,
+                "originalText": original_text,
+                "redactedText": redacted_text,
+                "containsPii": has_pii
+            })
+
+        # 4. Сохранение результата
+        # Меняем папку /original/ на /redacted/ и форсируем расширение .wav
+        base_redacted_path = request.file_path.replace("/original/", "/redacted/")
+        redacted_file_path = os.path.splitext(base_redacted_path)[0] + ".wav"
+        
+        os.makedirs(os.path.dirname(redacted_file_path), exist_ok=True)
+        
+        # Экспортируем в WAV (самый надежный формат для плеереров)
+        redacted_audio.export(redacted_file_path, format="wav")
+
+        # Удаляем временный файл
+        if os.path.exists(temp_wav): os.remove(temp_wav)
+
+        return {
+            "redactedAudioPath": redacted_file_path,
+            "segments": segments
+        }
+
+    except Exception as e:
+        print(f"Ошибка при обработке: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+============================================================
+
+
 File: ./backend/demo/src/test/java/com/example/demo/DemoApplicationTests.java
 package com.example.demo;
 
@@ -472,6 +634,7 @@ public class VoskService {
 File: ./backend/demo/src/main/java/com/example/demo/services/TranscriptionService.java
 package com.example.demo.services;
 
+import com.example.demo.DTO.PythonSegment;
 import com.example.demo.models.CallRecord;
 import com.example.demo.models.TranscriptSegment;
 import com.example.demo.repository.CallRecordRepository;
@@ -480,9 +643,11 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestTemplate;
+import com.example.demo.DTO.PythonResponse;
+import com.example.demo.DTO.PythonDetailedSegment;
 
-import java.util.List;
+import java.util.Map;
 
 @Service
 @RequiredArgsConstructor
@@ -490,57 +655,48 @@ import java.util.List;
 public class TranscriptionService {
 
     private final CallRecordRepository callRecordRepository;
-    private final TranscriptSegmentRepository transcriptSegmentRepository;
-    private final VoskService voskService;
+    private final TranscriptSegmentRepository segmentRepository;
+    private final RestTemplate restTemplate = new RestTemplate(); // Для вызова Python
 
-    @Async("transcriptionTaskExecutor") // Указываем наш настроенный пулл потоков
-    public void processAudioAsync(Long callRecordId) {
-        log.info("Начат асинхронный процесс обработки записи ID: {}", callRecordId);
+    @Async("transcriptionTaskExecutor")
+public void processAudioAsync(Long callRecordId) {
+    CallRecord record = callRecordRepository.findById(callRecordId).orElseThrow();
+    record.setStatus(CallRecord.RecordStatus.TRANSCRIBING);
+    callRecordRepository.save(record);
 
-        // 1. Ставим статус TRANSCRIBING
-        CallRecord callRecord = updateStatus(callRecordId, CallRecord.RecordStatus.TRANSCRIBING);
-        if (callRecord == null) return;
+    try {
+        String pythonUrl = "http://python-stt:8000/transcribe";
+        Map<String, String> request = Map.of("file_path", record.getOriginalAudioPath());
 
-        try {
-            // 2. Конвертация (если нужно)
-            String readyAudioPath = voskService.convertToPcm16kHz(callRecord.getOriginalAudioPath());
+        // 1. Вызываем Python и получаем полный анализ
+        PythonResponse response = restTemplate.postForObject(pythonUrl, request, PythonResponse.class);
 
-            // 3. Вызов Vosk STT (занимает время, поэтому мы не в @Transactional)
-            List<TranscriptSegment> segments = voskService.transcribe(readyAudioPath);
-
-            // 4. Привязываем сегменты к звонку и сохраняем
-            saveSegmentsAndComplete(callRecord, segments);
-
-        } catch (Exception e) {
-            log.error("Ошибка при обработке записи ID: {}", callRecordId, e);
-            updateStatus(callRecordId, CallRecord.RecordStatus.ERROR);
+        if (response != null) {
+            // 2. Обновляем путь к анонимизированному аудио
+            record.setRedactedAudioPath(response.redacted_audio_path());
+            
+            // 3. Сохраняем сегменты с типами ПДн
+            for (PythonDetailedSegment s : response.segments()) {
+                TranscriptSegment ts = TranscriptSegment.builder()
+                        .callRecord(record)
+                        .speakerId(s.speaker())
+                        .startTime(s.start())
+                        .endTime(s.end())
+                        .originalText(s.original_text())
+                        .redactedText(s.redacted_text())
+                        .containsPii(s.contains_pii())
+                        // Можно добавить поле PiiTypes в БД, если нужно
+                        .build();
+                segmentRepository.save(ts);
+            }
         }
-    }
 
-    @Transactional
-    public CallRecord updateStatus(Long id, CallRecord.RecordStatus status) {
-        CallRecord record = callRecordRepository.findById(id).orElse(null);
-        if (record != null) {
-            record.setStatus(status);
-            callRecordRepository.save(record);
-        }
-        return record;
+        record.setStatus(CallRecord.RecordStatus.COMPLETED);
+    } catch (Exception e) {
+        record.setStatus(CallRecord.RecordStatus.ERROR);
     }
-
-    @Transactional
-    public void saveSegmentsAndComplete(CallRecord callRecord, List<TranscriptSegment> segments) {
-        for (TranscriptSegment segment : segments) {
-            segment.setCallRecord(callRecord);
-            // Если тут сразу применяешь LLM для ПДн, заполняй redactedText и containsPii
-        }
-        transcriptSegmentRepository.saveAll(segments);
-        
-        callRecord.setStatus(CallRecord.RecordStatus.COMPLETED);
-        callRecord.setDurationSeconds(120); // Заглушка, тут вычисляешь реальную длительность
-        callRecordRepository.save(callRecord);
-        
-        log.info("Обработка записи ID: {} успешно завершена", callRecord.getId());
-    }
+    callRecordRepository.save(record);
+}
 }
 
 ============================================================
@@ -561,7 +717,11 @@ import com.example.demo.services.AudioStorageService;
 import com.example.demo.services.TranscriptionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.UrlResource;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -569,6 +729,8 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -585,7 +747,9 @@ public class CallController {
     private final AudioStorageService storageService;
     private final TranscriptionService transcriptionService;
 
-    // Вспомогательный метод получения текущего пользователя
+    /**
+     * Вспомогательный метод получения текущего пользователя из Security Context
+     */
     private User getCurrentUser() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         String login = auth.getName();
@@ -593,15 +757,18 @@ public class CallController {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Пользователь не найден"));
     }
 
+    /**
+     * Загрузка нового аудиофайла
+     */
     @PostMapping("/upload")
     public ResponseEntity<?> uploadFile(@RequestParam("file") MultipartFile file) {
         User currentUser = getCurrentUser();
-        log.info("Пользователь {} загружает файл {}", currentUser.getLogin(), file.getOriginalFilename());
+        log.info("Пользователь {} загружает файл: {}", currentUser.getLogin(), file.getOriginalFilename());
 
-        // 1. Сохраняем физически на диск
+        // 1. Сохраняем физически на диск (папка uploads/original)
         String filePath = storageService.storeFile(file);
 
-        // 2. Создаем запись в БД
+        // 2. Создаем запись в БД со статусом UPLOADED
         CallRecord record = CallRecord.builder()
                 .user(currentUser)
                 .originalAudioPath(filePath)
@@ -609,56 +776,34 @@ public class CallController {
                 .build();
         record = callRecordRepository.save(record);
 
-        // 3. Запускаем асинхронную обработку
+        // 3. Запускаем асинхронную обработку (STT + Redaction)
         transcriptionService.processAudioAsync(record.getId());
 
-        // 4. Мгновенно возвращаем ответ (200 OK)
         return ResponseEntity.ok(Map.of(
                 "message", "Файл загружен и отправлен в обработку",
                 "callRecordId", record.getId()
         ));
     }
 
+    /**
+     * Получение списка всех звонков текущего пользователя
+     */
     @GetMapping("/my")
     public ResponseEntity<List<CallRecordDto>> getMyCalls() {
         User currentUser = getCurrentUser();
-        
         List<CallRecord> records = callRecordRepository.findAllByUserIdOrderByCreatedAtDesc(currentUser.getId());
         
-        // Преобразуем в DTO
-        List<CallRecordDto> dtos = records.stream().map(r -> CallRecordDto.builder()
-                .id(r.getId())
-                .originalAudioPath(r.getOriginalAudioPath())
-                .durationSeconds(r.getDurationSeconds())
-                .status(r.getStatus())
-                .createdAt(r.getCreatedAt())
-                .build()
-        ).collect(Collectors.toList());
-
+        List<CallRecordDto> dtos = records.stream().map(this::convertToDto).collect(Collectors.toList());
         return ResponseEntity.ok(dtos);
     }
 
+    /**
+     * Получение детальной информации о звонке (метаданные + все текстовые сегменты)
+     */
     @GetMapping("/{id}")
     public ResponseEntity<CallDetailsDto> getCallDetails(@PathVariable Long id) {
-        User currentUser = getCurrentUser();
+        CallRecord record = getCallRecordWithSecurityCheck(id);
 
-        CallRecord record = callRecordRepository.findById(id)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Запись не найдена"));
-
-        // Проверка прав доступа (пользователь может смотреть только свои записи)
-        if (!record.getUser().getId().equals(currentUser.getId())) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Нет доступа к данной записи");
-        }
-
-        CallRecordDto callDto = CallRecordDto.builder()
-                .id(record.getId())
-                .originalAudioPath(record.getOriginalAudioPath())
-                .durationSeconds(record.getDurationSeconds())
-                .status(record.getStatus())
-                .createdAt(record.getCreatedAt())
-                .build();
-
-        // Запрашиваем транскрипт (если есть)
         List<TranscriptSegmentDto> segmentDtos = segmentRepository.findAllByCallRecordIdOrderByStartTimeAsc(id)
                 .stream().map(s -> TranscriptSegmentDto.builder()
                         .id(s.getId())
@@ -672,9 +817,75 @@ public class CallController {
                 ).collect(Collectors.toList());
 
         return ResponseEntity.ok(CallDetailsDto.builder()
-                .callRecord(callDto)
+                .callRecord(convertToDto(record))
                 .segments(segmentDtos)
                 .build());
+    }
+
+    /**
+     * Стрим анонимизированного аудиофайла (для проигрывателя на фронтенде)
+     */
+    @GetMapping("/{id}/audio/redacted")
+    public ResponseEntity<Resource> getRedactedAudio(@PathVariable Long id) {
+        CallRecord record = getCallRecordWithSecurityCheck(id);
+
+        if (record.getRedactedAudioPath() == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Анонимизированный файл еще не готов");
+        }
+
+        return serveAudioFile(record.getRedactedAudioPath());
+    }
+
+    /**
+     * Стрим оригинального аудиофайла
+     */
+    @GetMapping("/{id}/audio/original")
+    public ResponseEntity<Resource> getOriginalAudio(@PathVariable Long id) {
+        CallRecord record = getCallRecordWithSecurityCheck(id);
+        return serveAudioFile(record.getOriginalAudioPath());
+    }
+
+    // --- Приватные вспомогательные методы ---
+
+    private CallRecord getCallRecordWithSecurityCheck(Long id) {
+        User currentUser = getCurrentUser();
+        CallRecord record = callRecordRepository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Запись не найдена"));
+
+        if (!record.getUser().getId().equals(currentUser.getId())) {
+            log.warn("Попытка несанкционированного доступа пользователем {} к записи {}", currentUser.getLogin(), id);
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Нет доступа к данной записи");
+        }
+        return record;
+    }
+
+    private ResponseEntity<Resource> serveAudioFile(String path) {
+        try {
+            Path filePath = Paths.get(path);
+            Resource resource = new UrlResource(filePath.toUri());
+
+            if (!resource.exists() || !resource.isReadable()) {
+                throw new RuntimeException("Файл не найден или недоступен");
+            }
+
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType("audio/wav")) // Можно расширить до mpeg, если нужно
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + resource.getFilename() + "\"")
+                    .body(resource);
+        } catch (Exception e) {
+            log.error("Ошибка при чтении аудиофайла: {}", path, e);
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Ошибка при загрузке аудио");
+        }
+    }
+
+    private CallRecordDto convertToDto(CallRecord r) {
+        return CallRecordDto.builder()
+                .id(r.getId())
+                .originalAudioPath(r.getOriginalAudioPath())
+                .durationSeconds(r.getDurationSeconds())
+                .status(r.getStatus())
+                .createdAt(r.getCreatedAt())
+                .build();
     }
 }
 
@@ -965,6 +1176,51 @@ public record RegisterRequest(
 ============================================================
 
 
+File: ./backend/demo/src/main/java/com/example/demo/DTO/PythonResponse.java
+package com.example.demo.DTO;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.List;
+
+public record PythonResponse(
+    @JsonProperty("redactedAudioPath") String redactedAudioPath,
+    @JsonProperty("segments") List<PythonDetailedSegment> segments
+) {
+    // Геттер для сервиса
+    public String redacted_audio_path() { return redactedAudioPath; }
+}
+
+============================================================
+
+
+File: ./backend/demo/src/main/java/com/example/demo/DTO/PythonDetailedSegment.java
+package com.example.demo.DTO;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.List;
+
+public record PythonDetailedSegment(
+    Integer speaker,
+    Float start,
+    Float end,
+    @JsonProperty("originalText") String originalText,
+    @JsonProperty("redactedText") String redactedText,
+    @JsonProperty("containsPii") Boolean containsPii
+) {
+    public String original_text() { return originalText; }
+    public String redacted_text() { return redactedText; }
+    public Boolean contains_pii() { return containsPii; }
+}
+
+============================================================
+
+
+File: ./backend/demo/src/main/java/com/example/demo/DTO/PythonSegment.java
+package com.example.demo.DTO;
+
+public record PythonSegment(Integer speaker, Float start, Float end, String text) {}
+
+============================================================
+
+
 File: ./backend/demo/src/main/java/com/example/demo/DTO/TranscriptSegmentDto.java
 package com.example.demo.DTO;
 
@@ -1093,13 +1349,13 @@ public interface TestRepository extends JpaRepository<Test, Long> {
 
 
 File: ./backendtest/test.ts
-import { authService, testService } from "./api/auth-services";
+// File: ./backendtest/test.ts
+import fs from "fs";
+import { authService } from "./api/auth-services";
+import { callService } from "./api/call-services";
 import { RegisterRequest } from "./api/types";
 
-/**
- * Эмуляция localStorage для работы в Node.js (tsx/ts-node).
- * В браузере этот блок будет проигнорирован.
- */
+// Эмуляция localStorage (оставляем как было)
 if (typeof localStorage === "undefined") {
   const storage: Record<string, string> = {};
   (globalThis as any).localStorage = {
@@ -1110,75 +1366,122 @@ if (typeof localStorage === "undefined") {
     removeItem: (k: string) => {
       delete storage[k];
     },
-    clear: () => {
-      /* не используется в тесте */
-    },
   };
 }
 
-async function runFullTest() {
-  console.log("🚀 Запуск полного теста API...");
+// Вспомогательная функция для ожидания (sleep)
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  // Генерация случайного логина, чтобы не ловить ошибку "User already exists"
+// Создаем тестовый файл, если его нет
+const TEST_AUDIO_PATH = "./meow.m4a";
+if (!fs.existsSync(TEST_AUDIO_PATH)) {
+  console.log("⚠️ Тестовый аудиофайл не найден. Создаю валидный пустой WAV...");
+  // Байт-код минимального валидного WAV файла (1 секунда тишины)
+  const silentWav = Buffer.from(
+    "UklGRigAAABXQVZFRm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA== ",
+    "base64",
+  );
+  fs.writeFileSync(TEST_AUDIO_PATH, silentWav);
+}
+
+async function runFullE2ETest() {
+  console.log("🚀 ЗАПУСК ПОЛНОГО E2E ТЕСТА (Voice Redaction)...\n");
+
   const randomSuffix = Math.floor(Math.random() * 10000);
   const mockUser: RegisterRequest = {
-    login: `frontend_dev_${randomSuffix}`,
+    login: `operator_${randomSuffix}`,
     password: "secure_password_123",
-    name: "Maxim",
-    company: "TulaHack",
+    name: "Anna",
+    company: "AituLabs",
   };
 
   try {
-    // --- ШАГ 1: РЕГИСТРАЦИЯ ---
-    console.log(`\n1. Регистрация пользователя [${mockUser.login}]...`);
+    // --- ШАГ 1: АВТОРИЗАЦИЯ ---
+    console.log(`1️⃣ Регистрация и Вход [${mockUser.login}]`);
     const regData = await authService.register(mockUser);
-
-    // Сохраняем токен в localStorage (имитация поведения браузера)
     localStorage.setItem("jwt_token", regData.token);
-    console.log("✅ Успех! JWT получен и сохранен в хранилище.");
+    console.log("✅ Пользователь зарегистрирован, токен сохранен.");
 
-    // --- ШАГ 2: ПОВТОРНЫЙ ВХОД (ЛОГИН) ---
-    console.log("\n2. Проверка входа (login)...");
-    const loginData = await authService.login({
-      login: mockUser.login,
-      password: mockUser.password,
-    });
+    // --- ШАГ 2: ЗАГРУЗКА АУДИО ---
+    console.log(`\n2️⃣ Загрузка файла ${TEST_AUDIO_PATH} на сервер...`);
+    const uploadRes = await callService.uploadAudio(TEST_AUDIO_PATH);
+    const recordId = uploadRes.callRecordId;
+    console.log(`✅ Файл загружен. ID записи: ${recordId}`);
 
-    if (loginData.token) {
-      console.log("✅ Вход выполнен успешно.");
+    // --- ШАГ 3: ОЖИДАНИЕ ТРАНСКРИБАЦИИ (POLLING) ---
+    console.log("\n3️⃣ Ожидание обработки (STT + PII Redaction)...");
+    let isCompleted = false;
+    let attempts = 0;
+    const maxAttempts = 15; // Ждем максимум 30 секунд (15 попыток * 2 сек)
+
+    while (!isCompleted && attempts < maxAttempts) {
+      const details = await callService.getCallDetails(recordId);
+      process.stdout.write(`⏳ Статус: ${details.callRecord.status}...\r`);
+
+      if (details.callRecord.status === "COMPLETED") {
+        isCompleted = true;
+        console.log(`\n✅ Обработка завершена!`);
+      } else if (details.callRecord.status === "ERROR") {
+        throw new Error("❌ Сервер вернул ошибку при обработке файла!");
+      } else {
+        await delay(2000); // Ждем 2 секунды перед следующим запросом
+        attempts++;
+      }
     }
 
-    // --- ШАГ 3: ЗАПРОС ЗАЩИЩЕННЫХ ДАННЫХ ---
-    console.log("\n3. Запрос защищенных данных (/api/test)...");
-    const data = await testService.getTestData();
+    if (!isCompleted) throw new Error("❌ Превышено время ожидания обработки.");
 
-    console.log("✅ Доступ разрешен!");
-    console.log("Результат из БД:", data);
+    // --- ШАГ 4: ПРОВЕРКА РЕЗУЛЬТАТОВ (ТРАНСКРИПТ) ---
+    console.log("\n4️⃣ Проверка результатов транскрибации...");
+    const finalDetails = await callService.getCallDetails(recordId);
 
-    // --- ШАГ 4: ПРОВЕРКА ВЫХОДА ---
-    console.log("\n4. Проверка выхода...");
-    authService.logout();
-    console.log("✅ Токен удален из localStorage.");
+    console.log(
+      `Всего найдено сегментов диалога: ${finalDetails.segments.length}`,
+    );
+
+    // Выводим диалог в консоль для наглядности
+    finalDetails.segments.forEach((seg) => {
+      const speaker = seg.speakerId === 1 ? "Клиент" : "Оператор";
+      const piiFlag = seg.containsPii ? "🔴 [PII FOUND]" : "🟢 [SAFE]";
+      console.log(`[${seg.startTime} - ${seg.endTime}] ${speaker} ${piiFlag}:`);
+      console.log(`   Оригинал: ${seg.originalText}`);
+      if (seg.containsPii) {
+        console.log(`   Цензура:  ${seg.redactedText}`);
+      }
+    });
+
+    // --- ШАГ 5: ПРОВЕРКА АНОНИМИЗИРОВАННОГО АУДИО ---
+    console.log("\n5️⃣ Скачивание анонимизированного аудио...");
+    const audioBuffer = await callService.getRedactedAudio(recordId);
+    console.log(
+      `✅ Аудио успешно скачано! Размер: ${audioBuffer.byteLength} байт.`,
+    );
+
+    // Успешный конец
+    console.log(
+      "\n🏁 E2E ТЕСТИРОВАНИЕ ЗАВЕРШЕНО УСПЕШНО! ВСЕ СИСТЕМЫ РАБОТАЮТ!",
+    );
   } catch (error: any) {
     console.error("\n❌ ТЕСТ ПРОВАЛЕН:");
     if (error.response) {
-      console.error(`Статус: ${error.response.status}`);
       console.error(
-        `Данные ошибки:`,
-        JSON.stringify(error.response.data, null, 2),
+        `Status: ${error.response.status} ${error.response.statusText}`,
       );
-      console.error(`URL запроса: ${error.config.url}`);
+      console.error(JSON.stringify(error.response.data, null, 2));
     } else {
-      console.error(`Ошибка сети или кода: ${error.message}`);
+      console.error(error.message);
     }
-    process.exit(1); // Выход с ошибкой
+    process.exit(1);
+  } finally {
+    // Чистим за собой
+    authService.logout();
+    if (fs.readFileSync(TEST_AUDIO_PATH, "utf-8") === "dummy audio content") {
+      fs.unlinkSync(TEST_AUDIO_PATH);
+    }
   }
-
-  console.log("\n🏁 Тестирование завершено успешно!");
 }
 
-// Запуск
-runFullTest();
+runFullE2ETest();
 
 
 ============================================================
@@ -1287,6 +1590,90 @@ export interface TestModel {
   id: number;
   name: string;
 }
+// File: ./backendtest/api/types.ts
+
+// ... (предыдущие типы AuthResponse, RegisterRequest и т.д. остаются) ...
+
+export type RecordStatus =
+  | "UPLOADED"
+  | "TRANSCRIBING"
+  | "REDACTING"
+  | "COMPLETED"
+  | "ERROR";
+
+export interface CallRecordDto {
+  id: number;
+  originalAudioPath: string;
+  durationSeconds: number;
+  status: RecordStatus;
+  createdAt: string;
+}
+
+export interface TranscriptSegmentDto {
+  id: number;
+  speakerId: number;
+  startTime: number;
+  endTime: number;
+  originalText: string;
+  redactedText: string;
+  containsPii: boolean;
+}
+
+export interface CallDetailsDto {
+  callRecord: CallRecordDto;
+  segments: TranscriptSegmentDto[];
+}
+
+
+============================================================
+
+
+File: ./backendtest/api/call-services.ts
+// File: ./backendtest/api/call-services.ts
+import FormData from "form-data";
+import fs from "fs";
+import { apiClient } from "./auth-services";
+import { CallDetailsDto, CallRecordDto } from "./types";
+
+export const callService = {
+  // 1. Загрузка файла
+  async uploadAudio(
+    filePath: string,
+  ): Promise<{ message: string; callRecordId: number }> {
+    const formData = new FormData();
+    formData.append("file", fs.createReadStream(filePath));
+
+    const response = await apiClient.post<{
+      message: string;
+      callRecordId: number;
+    }>("calls/upload", formData, {
+      headers: {
+        ...formData.getHeaders(),
+      },
+    });
+    return response.data;
+  },
+
+  // 2. Получение всех звонков
+  async getMyCalls(): Promise<CallRecordDto[]> {
+    const response = await apiClient.get<CallRecordDto[]>("calls/my");
+    return response.data;
+  },
+
+  // 3. Получение деталей звонка (с транскриптом)
+  async getCallDetails(id: number): Promise<CallDetailsDto> {
+    const response = await apiClient.get<CallDetailsDto>(`calls/${id}`);
+    return response.data;
+  },
+
+  // 4. Скачивание/проверка анонимизированного аудио
+  async getRedactedAudio(id: number): Promise<Buffer> {
+    const response = await apiClient.get(`calls/${id}/audio/redacted`, {
+      responseType: "arraybuffer", // Получаем как бинарные данные
+    });
+    return response.data;
+  },
+};
 
 
 ============================================================

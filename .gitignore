@@ -87,6 +87,9 @@ pip-log.txt
 pip-delete-this-arg.txt
 *.sqlite3
 *.db
+*.wav
+*.mp3
+*.m4a
 
 # Ignore everything in python-stt/ except vosk-model
 
