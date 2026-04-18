@@ -446,7 +446,7 @@ export default function Home() {
                 Готовы защитить свои аудиоданные?
               </h2>
               <p className="text-custom-secondary mb-8 max-w-lg mx-auto">
-                Присоединяйтесь к хакатону и получите доступ к демо-версии сервиса
+                Присоединяйтесь к нам и получите доступ к демо-версии сервиса
               </p>
               <div className="flex flex-col sm:flex-row gap-4 justify-center">
                 <button
