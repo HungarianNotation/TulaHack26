@@ -89,7 +89,7 @@ pip-delete-this-arg.txt
 *.db
 
 # Ignore everything in python-stt/ except vosk-model
-/python-stt/*
+
 !/python-stt/vosk-model/
 
 .env
