@@ -2,7 +2,7 @@
 import FormData from "form-data";
 import fs from "fs";
 import { apiClient } from "./auth-services";
-import { CallDetailsDto, CallRecordDto } from "./types";
+import { CallDetailsDto, CallRecordDto, StatsResponse } from "./types";
 
 export const callService = {
   // 1. Загрузка файла
@@ -15,11 +15,7 @@ export const callService = {
     const response = await apiClient.post<{
       message: string;
       callRecordId: number;
-    }>("calls/upload", formData, {
-      headers: {
-        ...formData.getHeaders(),
-      },
-    });
+    }>("calls/upload", formData, { headers: { ...formData.getHeaders() } });
     return response.data;
   },
 
@@ -35,11 +31,17 @@ export const callService = {
     return response.data;
   },
 
-  // 4. Скачивание/проверка анонимизированного аудио
+  // 4. Скачивание анонимизированного аудио
   async getRedactedAudio(id: number): Promise<Buffer> {
     const response = await apiClient.get(`calls/${id}/audio/redacted`, {
-      responseType: "arraybuffer", // Получаем как бинарные данные
+      responseType: "arraybuffer",
     });
+    return response.data;
+  },
+
+  // 5. Получение статистики (ДОБАВЛЕНО)
+  async getStats(): Promise<StatsResponse> {
+    const response = await apiClient.get<StatsResponse>("calls/stats");
     return response.data;
   },
 };
