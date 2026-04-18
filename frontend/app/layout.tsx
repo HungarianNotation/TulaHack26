@@ -33,7 +33,7 @@ export default function RootLayout({
         <GlobalParticlesProvider />
 
         <Header />
-        <main className="grow pt-16 relative z-20">{children}</main>
+        <main className="grow  relative z-20">{children}</main>
       </body>
     </html>
   );
