@@ -8,7 +8,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py .
+COPY . .
 
 # Ожидаем, что модель будет примонтирована или скопирована сюда
 # Для хакатона лучше скачать vosk-model-small-ru и положить в папку python-stt/vosk-model

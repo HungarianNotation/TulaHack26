@@ -8,9 +8,6 @@ public record PythonDetailedSegment(
     Float end,
     @JsonProperty("originalText") String originalText,
     @JsonProperty("redactedText") String redactedText,
-    @JsonProperty("containsPii") Boolean containsPii
-) {
-    public String original_text() { return originalText; }
-    public String redacted_text() { return redactedText; }
-    public Boolean contains_pii() { return containsPii; }
-}
+    @JsonProperty("containsPii") Boolean containsPii,
+    @JsonProperty("piiTypes") List<String> piiTypes
+) {}

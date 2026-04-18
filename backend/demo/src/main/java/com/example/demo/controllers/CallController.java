@@ -4,6 +4,7 @@ import com.example.demo.DTO.CallDetailsDto;
 import com.example.demo.DTO.CallRecordDto;
 import com.example.demo.DTO.TranscriptSegmentDto;
 import com.example.demo.models.CallRecord;
+import com.example.demo.models.TranscriptSegment;
 import com.example.demo.models.User;
 import com.example.demo.repository.CallRecordRepository;
 import com.example.demo.repository.TranscriptSegmentRepository;
@@ -26,6 +27,9 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -42,9 +46,6 @@ public class CallController {
     private final AudioStorageService storageService;
     private final TranscriptionService transcriptionService;
 
-    /**
-     * Вспомогательный метод получения текущего пользователя из Security Context
-     */
     private User getCurrentUser() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         String login = auth.getName();
@@ -52,18 +53,11 @@ public class CallController {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Пользователь не найден"));
     }
 
-    /**
-     * Загрузка нового аудиофайла
-     */
     @PostMapping("/upload")
     public ResponseEntity<?> uploadFile(@RequestParam("file") MultipartFile file) {
         User currentUser = getCurrentUser();
-        log.info("Пользователь {} загружает файл: {}", currentUser.getLogin(), file.getOriginalFilename());
-
-        // 1. Сохраняем физически на диск (папка uploads/original)
         String filePath = storageService.storeFile(file);
 
-        // 2. Создаем запись в БД со статусом UPLOADED
         CallRecord record = CallRecord.builder()
                 .user(currentUser)
                 .originalAudioPath(filePath)
@@ -71,106 +65,119 @@ public class CallController {
                 .build();
         record = callRecordRepository.save(record);
 
-        // 3. Запускаем асинхронную обработку (STT + Redaction)
         transcriptionService.processAudioAsync(record.getId());
 
         return ResponseEntity.ok(Map.of(
-                "message", "Файл загружен и отправлен в обработку",
+                "message", "Файл принят в обработку",
                 "callRecordId", record.getId()
         ));
     }
 
-    /**
-     * Получение списка всех звонков текущего пользователя
-     */
     @GetMapping("/my")
     public ResponseEntity<List<CallRecordDto>> getMyCalls() {
         User currentUser = getCurrentUser();
         List<CallRecord> records = callRecordRepository.findAllByUserIdOrderByCreatedAtDesc(currentUser.getId());
         
-        List<CallRecordDto> dtos = records.stream().map(this::convertToDto).collect(Collectors.toList());
+        // Используем явный цикл, если Stream вызывает ошибки инференса
+        List<CallRecordDto> dtos = new ArrayList<>();
+        for (CallRecord r : records) {
+            dtos.add(convertToDto(r));
+        }
         return ResponseEntity.ok(dtos);
     }
 
-    /**
-     * Получение детальной информации о звонке (метаданные + все текстовые сегменты)
-     */
     @GetMapping("/{id}")
     public ResponseEntity<CallDetailsDto> getCallDetails(@PathVariable Long id) {
-        CallRecord record = getCallRecordWithSecurityCheck(id);
+        CallRecord record = getCallWithSecurityCheck(id);
+        List<TranscriptSegment> entities = segmentRepository.findAllByCallRecordIdOrderByStartTimeAsc(id);
 
-        List<TranscriptSegmentDto> segmentDtos = segmentRepository.findAllByCallRecordIdOrderByStartTimeAsc(id)
-                .stream().map(s -> TranscriptSegmentDto.builder()
-                        .id(s.getId())
-                        .speakerId(s.getSpeakerId())
-                        .startTime(s.getStartTime())
-                        .endTime(s.getEndTime())
-                        .originalText(s.getOriginalText())
-                        .redactedText(s.getRedactedText())
-                        .containsPii(s.getContainsPii())
-                        .build()
-                ).collect(Collectors.toList());
+        // Явно указываем тип TranscriptSegmentDto в Stream
+        List<TranscriptSegmentDto> segmentDtos = entities.stream()
+            .map((TranscriptSegment s) -> {
+                List<String> piiList = (s.getPiiTypes() != null && !s.getPiiTypes().isEmpty())
+                        ? Arrays.asList(s.getPiiTypes().split(","))
+                        : new ArrayList<String>();
+                        
+                return TranscriptSegmentDto.builder()
+                    .id(s.getId())
+                    .speakerId(s.getSpeakerId())
+                    .startTime(s.getStartTime())
+                    .endTime(s.getEndTime())
+                    .originalText(s.getOriginalText())
+                    .redactedText(s.getRedactedText())
+                    .containsPii(s.getContainsPii())
+                    .piiTypes(piiList)
+                    .build();
+            })
+            .collect(Collectors.toList());
 
-        return ResponseEntity.ok(CallDetailsDto.builder()
+        CallDetailsDto details = CallDetailsDto.builder()
                 .callRecord(convertToDto(record))
                 .segments(segmentDtos)
-                .build());
+                .build();
+
+        return ResponseEntity.ok(details);
     }
 
-    /**
-     * Стрим анонимизированного аудиофайла (для проигрывателя на фронтенде)
-     */
-    @GetMapping("/{id}/audio/redacted")
-    public ResponseEntity<Resource> getRedactedAudio(@PathVariable Long id) {
-        CallRecord record = getCallRecordWithSecurityCheck(id);
+    @GetMapping("/stats")
+    public ResponseEntity<?> getStats() {
+        User user = getCurrentUser();
+        List<CallRecord> records = callRecordRepository.findAllByUserIdOrderByCreatedAtDesc(user.getId());
+        
+        Map<String, Integer> piiDistribution = new HashMap<>();
+        int totalIncidents = 0;
 
-        if (record.getRedactedAudioPath() == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Анонимизированный файл еще не готов");
+        for (CallRecord r : records) {
+            for (TranscriptSegment s : r.getSegments()) {
+                if (s.getContainsPii() != null && s.getContainsPii() && s.getPiiTypes() != null) {
+                    String[] types = s.getPiiTypes().split(",");
+                    for (String type : types) {
+                        String cleanType = type.trim();
+                        if (!cleanType.isEmpty()) {
+                            piiDistribution.put(cleanType, piiDistribution.getOrDefault(cleanType, 0) + 1);
+                            totalIncidents++;
+                        }
+                    }
+                }
+            }
         }
 
-        return serveAudioFile(record.getRedactedAudioPath());
+        return ResponseEntity.ok(Map.of(
+            "totalCallsProcessed", records.size(),
+            "totalPiiIncidentsFound", totalIncidents,
+            "piiTypeDistribution", piiDistribution
+        ));
     }
 
-    /**
-     * Стрим оригинального аудиофайла
-     */
-    @GetMapping("/{id}/audio/original")
-    public ResponseEntity<Resource> getOriginalAudio(@PathVariable Long id) {
-        CallRecord record = getCallRecordWithSecurityCheck(id);
-        return serveAudioFile(record.getOriginalAudioPath());
+    @GetMapping("/{id}/audio/{type}")
+    public ResponseEntity<Resource> getAudio(@PathVariable Long id, @PathVariable String type) {
+        CallRecord record = getCallWithSecurityCheck(id);
+        String path = "redacted".equalsIgnoreCase(type) ? record.getRedactedAudioPath() : record.getOriginalAudioPath();
+
+        if (path == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Файл отсутствует");
+        }
+
+        try {
+            Path filePath = Paths.get(path);
+            Resource resource = new UrlResource(filePath.toUri());
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType("audio/wav"))
+                    .body(resource);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Ошибка чтения аудио");
+        }
     }
 
-    // --- Приватные вспомогательные методы ---
-
-    private CallRecord getCallRecordWithSecurityCheck(Long id) {
+    private CallRecord getCallWithSecurityCheck(Long id) {
         User currentUser = getCurrentUser();
         CallRecord record = callRecordRepository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Запись не найдена"));
 
         if (!record.getUser().getId().equals(currentUser.getId())) {
-            log.warn("Попытка несанкционированного доступа пользователем {} к записи {}", currentUser.getLogin(), id);
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Нет доступа к данной записи");
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Нет доступа");
         }
         return record;
-    }
-
-    private ResponseEntity<Resource> serveAudioFile(String path) {
-        try {
-            Path filePath = Paths.get(path);
-            Resource resource = new UrlResource(filePath.toUri());
-
-            if (!resource.exists() || !resource.isReadable()) {
-                throw new RuntimeException("Файл не найден или недоступен");
-            }
-
-            return ResponseEntity.ok()
-                    .contentType(MediaType.parseMediaType("audio/wav")) // Можно расширить до mpeg, если нужно
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + resource.getFilename() + "\"")
-                    .body(resource);
-        } catch (Exception e) {
-            log.error("Ошибка при чтении аудиофайла: {}", path, e);
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Ошибка при загрузке аудио");
-        }
     }
 
     private CallRecordDto convertToDto(CallRecord r) {
