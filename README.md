@@ -43,10 +43,10 @@
 ## 🚀 Запуск проекта (Docker Compose)
 
 1. **Клонируйте репозиторий:**
-   ```bash
+```bash
    git clone https://github.com/HungarianNotation/TulaHack26.git
    cd TulaHack26
-
+```
 2. **Настройка окружения**
 Скопируйте пример конфигурации и заполните пароли/порты (включая доступы к MySQL):
 ```bash
