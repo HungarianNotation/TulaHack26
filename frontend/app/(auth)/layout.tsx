@@ -36,7 +36,7 @@ const BackgroundScene = dynamic(
             <div
             className="fixed inset-0 z-10 pointer-events-none"
             style={{
-                backdropFilter: "blur(1px) saturate(150%)",
+                backdropFilter: "blur(2px) saturate(150%)",
                 backgroundColor: "rgba(255, 255, 255, 0)",
                 border: "1px solid rgba(255, 255, 255, 0.2)",
                 boxShadow: "inset 0 0 20px rgba(255, 255, 255, 0.2)",
