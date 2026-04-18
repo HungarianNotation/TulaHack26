@@ -69,4 +69,3 @@ docker-compose up --build -d
 docker-compose logs -f     # Просмотр логов в реальном времени
 docker-compose down        # Остановка всех контейнеров
 ```
-```
