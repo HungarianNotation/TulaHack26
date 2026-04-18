@@ -154,7 +154,7 @@ export default function BackgroundScene() {
             moveSpeed={[0.25, 0.35, 0.18]}
             scale={[0.7, 0.7, 0.7]}
             repulsionRadius={1.5}
-            repulsionStrength={0.5}
+            repulsionStrength={0.8}
         />
         <Shield
             initialPosition={[0, -0.3, -0.5]}
@@ -165,7 +165,7 @@ export default function BackgroundScene() {
             moveSpeed={[0.3, 0.4, 0.22]}
             scale={[0.8, 0.8, 0.8]}
             repulsionRadius={1.5}
-            repulsionStrength={0.5}
+            repulsionStrength={0.8}
         />
         <Shield
             initialPosition={[2.2, 0.5, -1.2]}
@@ -176,7 +176,7 @@ export default function BackgroundScene() {
             moveSpeed={[0.2, 0.3, 0.25]}
             scale={[0.75, 0.75, 0.75]}
             repulsionRadius={1.5}
-            repulsionStrength={0.5}
+            repulsionStrength={0.8}
         />
         </Canvas>
     );
