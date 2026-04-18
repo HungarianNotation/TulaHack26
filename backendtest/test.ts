@@ -19,33 +19,27 @@ if (typeof localStorage === "undefined") {
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Генерация валидного PCM 16kHz Mono WAV файла (2 секунды тишины)
 function generateSilentWav(filePath: string) {
   const sampleRate = 16000;
   const durationSeconds = 2;
   const numSamples = sampleRate * durationSeconds;
-  const buffer = Buffer.alloc(44 + numSamples * 2); // 16-bit = 2 bytes per sample
+  const buffer = Buffer.alloc(44 + numSamples * 2);
 
-  // RIFF chunk descriptor
   buffer.write("RIFF", 0);
   buffer.writeUInt32LE(36 + numSamples * 2, 4);
   buffer.write("WAVE", 8);
 
-  // fmt sub-chunk
   buffer.write("fmt ", 12);
-  buffer.writeUInt32LE(16, 16); // Subchunk1Size (16 for PCM)
-  buffer.writeUInt16LE(1, 20); // AudioFormat (1 for PCM)
-  buffer.writeUInt16LE(1, 22); // NumChannels (1)
-  buffer.writeUInt32LE(sampleRate, 24); // SampleRate
-  buffer.writeUInt32LE(sampleRate * 2, 28); // ByteRate
-  buffer.writeUInt16LE(2, 32); // BlockAlign
-  buffer.writeUInt16LE(16, 34); // BitsPerSample
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * 2, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
 
-  // data sub-chunk
   buffer.write("data", 36);
   buffer.writeUInt32LE(numSamples * 2, 40);
-
-  // Остальная часть буфера уже заполнена нулями (тишина) благодаря Buffer.alloc
 
   fs.writeFileSync(filePath, buffer);
 }
@@ -61,7 +55,7 @@ if (!fs.existsSync(TEST_AUDIO_PATH)) {
     "💡 ВАЖНО: Так как файл состоит из тишины, Vosk ничего не распознает и PII не будет найдено!",
   );
   console.log(
-    "💡 Чтобы реально протестировать цензуру, положи файл с речью (например, с произнесением телефона 89001234567) по пути ./meow.wav\n",
+    "💡 Чтобы реально протестировать цензуру с AI, положи файл с речью по пути ./meow.wav\n",
   );
 
   generateSilentWav(TEST_AUDIO_PATH);
@@ -86,17 +80,26 @@ async function runFullE2ETest() {
     localStorage.setItem("jwt_token", regData.token);
     console.log("✅ Пользователь зарегистрирован, токен сохранен.");
 
-    // --- ШАГ 2: ЗАГРУЗКА АУДИО ---
-    console.log(`\n2️⃣ Загрузка файла ${TEST_AUDIO_PATH} на сервер...`);
-    const uploadRes = await callService.uploadAudio(TEST_AUDIO_PATH);
+    // --- ШАГ 2: ЗАГРУЗКА АУДИО В РЕЖИМЕ SMART ---
+    const TARGET_MODE = "smart";
+    console.log(
+      `\n2️⃣ Загрузка файла на сервер (Режим обработки: ${TARGET_MODE.toUpperCase()})...`,
+    );
+
+    const uploadRes = await callService.uploadAudio(
+      TEST_AUDIO_PATH,
+      TARGET_MODE,
+    );
     const recordId = uploadRes.callRecordId;
-    console.log(`✅ Файл загружен. ID записи: ${recordId}`);
+    console.log(
+      `✅ Файл загружен. ID записи: ${recordId}. Сервер подтвердил режим: ${uploadRes.mode}`,
+    );
 
     // --- ШАГ 3: ОЖИДАНИЕ ТРАНСКРИБАЦИИ ---
-    console.log("\n3️⃣ Ожидание обработки (STT + PII Redaction)...");
+    console.log("\n3️⃣ Ожидание обработки (STT + GigaChat AI Redaction)...");
     let isCompleted = false;
     let attempts = 0;
-    const maxAttempts = 20;
+    const maxAttempts = 30; // Увеличил лимит попыток, так как AI может отвечать чуть дольше
 
     while (!isCompleted && attempts < maxAttempts) {
       const details = await callService.getCallDetails(recordId);
@@ -123,6 +126,17 @@ async function runFullE2ETest() {
     // --- ШАГ 4: ПРОВЕРКА РЕЗУЛЬТАТОВ (ТРАНСКРИПТ) ---
     console.log("\n4️⃣ Проверка результатов транскрибации...");
     const finalDetails = await callService.getCallDetails(recordId);
+
+    // Проверяем, что в базе сохранился правильный режим
+    if (finalDetails.callRecord.processingMode !== TARGET_MODE.toUpperCase()) {
+      console.log(
+        `⚠️ ВНИМАНИЕ: Ожидался режим ${TARGET_MODE.toUpperCase()}, но сервер вернул ${finalDetails.callRecord.processingMode}`,
+      );
+    } else {
+      console.log(
+        `✅ Режим обработки сохранен корректно: ${finalDetails.callRecord.processingMode}`,
+      );
+    }
 
     console.log(
       `Всего найдено сегментов диалога: ${finalDetails.segments.length}`,
@@ -193,7 +207,6 @@ async function runFullE2ETest() {
     process.exit(1);
   } finally {
     authService.logout();
-    // Удаляем сгенерированный тестовый файл, чтобы не мусорить
     if (isGeneratedSilentFile && fs.existsSync(TEST_AUDIO_PATH)) {
       fs.unlinkSync(TEST_AUDIO_PATH);
     }

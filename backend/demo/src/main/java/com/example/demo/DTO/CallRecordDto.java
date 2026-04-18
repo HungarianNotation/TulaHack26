@@ -12,5 +12,6 @@ public class CallRecordDto {
     private String originalAudioPath;
     private Integer durationSeconds;
     private RecordStatus status;
+    private String processingMode; // НОВОЕ ПОЛЕ
     private LocalDateTime createdAt;
 }

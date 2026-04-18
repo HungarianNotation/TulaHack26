@@ -25,8 +25,6 @@ services:
         condition: service_healthy
     restart: on-failure
     volumes:
-      # Пробрасываем общую папку для файлов
-      # Убедись, что в Dockerfile для Java установлен WORKDIR /app
       - ./uploads:/app/uploads
     deploy:
       resources:
@@ -37,7 +35,7 @@ services:
     networks:
       - kamp-network
 
-  # НОВЫЙ СЕРВИС ДЛЯ РАСПОЗНАВАНИЯ ГОЛОСА
+  # ТЕПЕРЬ ПРАВИЛЬНО: python-stt внутри блока services
   python-stt:
     build:
       context: ./python-stt
@@ -45,20 +43,21 @@ services:
     ports:
       - "8000:8000"
     restart: on-failure
+    environment:
+      - GIGACHAT_CREDENTIALS=${GIGACHAT_CREDENTIALS}
     volumes:
-      # Та же самая папка, чтобы пути в базе (напр. /app/uploads/...) совпадали у Java и Python
       - ./uploads:/app/uploads
-      # Папка с моделью Vosk. Скачай и положи её рядом с docker-compose.yml
       - ./python-stt/vosk-model:/app/vosk-model
     deploy:
       resources:
         limits:
-          cpus: "1.50" # Vosk потребляет CPU во время распознавания
+          cpus: "1.50"
           memory: 1024M
     logging: *default-logging
     networks:
       - kamp-network
 
+  # ТЕПЕРЬ ПРАВИЛЬНО: mariadb внутри блока services
   mariadb:
     image: mariadb:10.11
     container_name: mariadb

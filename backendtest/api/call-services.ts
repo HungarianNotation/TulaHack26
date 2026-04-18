@@ -5,16 +5,19 @@ import { apiClient } from "./auth-services";
 import { CallDetailsDto, CallRecordDto, StatsResponse } from "./types";
 
 export const callService = {
-  // 1. Загрузка файла
+  // 1. Загрузка файла (ДОБАВЛЕН ВЫБОР РЕЖИМА)
   async uploadAudio(
     filePath: string,
-  ): Promise<{ message: string; callRecordId: number }> {
+    mode: "turbo" | "smart" = "turbo", // По умолчанию используем turbo
+  ): Promise<{ message: string; callRecordId: number; mode: string }> {
     const formData = new FormData();
     formData.append("file", fs.createReadStream(filePath));
+    formData.append("mode", mode); // Передаем режим на бэкенд
 
     const response = await apiClient.post<{
       message: string;
       callRecordId: number;
+      mode: string;
     }>("calls/upload", formData, { headers: { ...formData.getHeaders() } });
     return response.data;
   },
@@ -39,7 +42,7 @@ export const callService = {
     return response.data;
   },
 
-  // 5. Получение статистики (ДОБАВЛЕНО)
+  // 5. Получение статистики
   async getStats(): Promise<StatsResponse> {
     const response = await apiClient.get<StatsResponse>("calls/stats");
     return response.data;

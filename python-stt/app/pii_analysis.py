@@ -1,4 +1,8 @@
+import os
+import json
+import logging
 import re
+from gigachat import GigaChat
 from natasha import (
     Segmenter, MorphVocab, NewsEmbedding, 
     NamesExtractor, Doc
@@ -29,11 +33,10 @@ def find_pii_words(vosk_words):
     pii_map = {}
     if not vosk_words: return pii_map
 
-    # 1. Точный поиск Имен
+    # 1. Точный поиск Имен (Режим Turbo)
     text_parts = [w['word'].capitalize() for w in vosk_words]
     full_text = " ".join(text_parts)
     
-    # Создаем карту: какой индекс символа к какому индексу слова относится
     char_to_word = {}
     current_char = 0
     for i, word in enumerate(text_parts):
@@ -45,11 +48,8 @@ def find_pii_words(vosk_words):
     for match in matches:
         first_word_idx = char_to_word.get(match.start)
         if first_word_idx is not None:
-            # Проверка на стоп-слова
             if text_parts[first_word_idx] in STOP_NAMES:
                 continue
-                
-            # Помечаем все слова, входящие в диапазон сущности
             curr = match.start
             while curr < match.stop:
                 idx = char_to_word.get(curr)
@@ -58,25 +58,18 @@ def find_pii_words(vosk_words):
                     pii_map[idx].add("NAME")
                 curr += 1
 
-    # 2. Точный поиск Цифр (Телефон/Дата)
-    # Помечаем только те слова, которые реально похожи на цифры, 
-    # если они стоят группой (минимум 2 подряд или через одно слово)
+    # 2. Точный поиск Цифр
     for i in range(len(vosk_words)):
         if is_digit_like(vosk_words[i]['word']):
-            # Проверяем соседей (есть ли рядом еще цифры?)
             has_neighbor = False
             for offset in [-2, -1, 1, 2]:
                 if 0 <= i + offset < len(vosk_words):
                     if is_digit_like(vosk_words[i + offset]['word']):
                         has_neighbor = True
                         break
-            
-            # Также помечаем ключевые слова даты, если они вплотную к цифрам
             if has_neighbor:
                 if i not in pii_map: pii_map[i] = set()
                 pii_map[i].add("CONTACT_INFO")
-                
-                # Захватываем "года", "мая", "рождения", если они прилипли к цифрам
                 for offset in [-1, 1]:
                     if 0 <= i + offset < len(vosk_words):
                         w_low = vosk_words[i+offset]['word'].lower()
@@ -84,4 +77,66 @@ def find_pii_words(vosk_words):
                             if (i+offset) not in pii_map: pii_map[i+offset] = set()
                             pii_map[i+offset].add("CONTACT_INFO")
 
+    return pii_map
+
+def find_pii_words_smart(vosk_words):
+    """Smart-режим анализа ПДн с использованием GigaChat"""
+    if not vosk_words: 
+        return {}
+
+    credentials = os.getenv("GIGACHAT_CREDENTIALS")
+    if not credentials:
+        logging.warning("GIGACHAT_CREDENTIALS не заданы. Откат к режиму Turbo.")
+        return find_pii_words(vosk_words)
+
+    # Собираем текст для отправки в ИИ
+    text_parts = [w['word'] for w in vosk_words]
+    full_text = " ".join(text_parts)
+
+    prompt = f"""Ты эксперт по безопасности ФЗ-152. Найди персональные данные в тексте. 
+Категории: NAME, PHONE, ADDRESS, DATE, DOCUMENT. 
+Верни ТОЛЬКО JSON формата: [{{"value": "текст", "type": "КАТЕГОРИЯ"}}]. Если данных нет — []. 
+Пример: текст "меня зовут анна звоните на восемь девятьсот", выход: [{{"value": "анна", "type": "NAME"}}, {{"value": "восемь девятьсот", "type": "PHONE"}}].
+
+Текст для анализа:
+{full_text}"""
+
+    try:
+        # Отключаем проверку сертификатов Минцифры для простоты развертывания
+        with GigaChat(credentials=credentials, verify_ssl_certs=False) as giga:
+            response = giga.chat(prompt)
+            ai_content = response.choices[0].message.content.strip()
+            
+            # Очистка от markdown (например ```json ... ```)
+            if ai_content.startswith("```json"): ai_content = ai_content[7:]
+            elif ai_content.startswith("```"): ai_content = ai_content[3:]
+            if ai_content.endswith("```"): ai_content = ai_content[:-3]
+            
+            pii_data = json.loads(ai_content.strip())
+            
+    except Exception as e:
+        logging.error(f"Ошибка GigaChat API: {e}. Выполняем fallback на Turbo режим.")
+        return find_pii_words(vosk_words)
+
+    # Маппинг строковых значений от ИИ на оригинальные индексы массива слов (Sliding Window)
+    pii_map = {}
+    for item in pii_data:
+        # Убираем знаки препинания, чтобы избежать расхождений со словами STT
+        val = re.sub(r'[^\w\s]', '', str(item.get("value", ""))).lower().strip()
+        pii_type = item.get("type", "UNKNOWN")
+        if not val: continue
+
+        val_words = val.split()
+        val_len = len(val_words)
+
+        for i in range(len(vosk_words) - val_len + 1):
+            window_words = [re.sub(r'[^\w\s]', '', vosk_words[i+j]['word']).lower().strip() for j in range(val_len)]
+            
+            # Если последовательность слов совпала
+            if " ".join(window_words) == val:
+                for j in range(val_len):
+                    idx = i + j
+                    if idx not in pii_map: pii_map[idx] = set()
+                    pii_map[idx].add(pii_type)
+                    
     return pii_map

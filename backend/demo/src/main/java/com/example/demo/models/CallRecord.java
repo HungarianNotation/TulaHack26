@@ -20,19 +20,20 @@ public class CallRecord {
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
-    // Пути к файлам в хранилище (например, S3 или просто папка на сервере)
     private String originalAudioPath;
-    private String redactedAudioPath; // Появится после обработки
+    private String redactedAudioPath;
 
     private Integer durationSeconds;
-    private Integer channelsCount; // 1 (моно) или 2 (стерео - легче разделить спикеров)
+    private Integer channelsCount;
 
     @Enumerated(EnumType.STRING)
-    private RecordStatus status; // Текущий статус обработки
+    private RecordStatus status;
+
+    @Enumerated(EnumType.STRING)
+    private ProcessingMode processingMode; // НОВОЕ ПОЛЕ
 
     private LocalDateTime createdAt;
 
-    // Привязка кусков текста к этой записи
     @OneToMany(mappedBy = "callRecord", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
     private List<TranscriptSegment> segments = new ArrayList<>();
@@ -43,10 +44,16 @@ public class CallRecord {
     }
 
     public enum RecordStatus {
-        UPLOADED,       // Файл загружен
-        TRANSCRIBING,   // Идет STT
-        REDACTING,      // Идет вырезание ПДн
-        COMPLETED,      // Готово
-        ERROR           // Ошибка обработки
+        UPLOADED,
+        TRANSCRIBING,
+        REDACTING,
+        COMPLETED,
+        ERROR
+    }
+
+    // НОВЫЙ ENUM
+    public enum ProcessingMode {
+        TURBO,
+        SMART
     }
 }

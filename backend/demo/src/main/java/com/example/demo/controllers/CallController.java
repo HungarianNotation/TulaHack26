@@ -15,7 +15,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -54,14 +53,26 @@ public class CallController {
     }
 
     @PostMapping("/upload")
-    public ResponseEntity<?> uploadFile(@RequestParam("file") MultipartFile file) {
+    public ResponseEntity<?> uploadFile(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "mode", defaultValue = "TURBO") String modeStr) { // Добавлен параметр mode
+            
         User currentUser = getCurrentUser();
         String filePath = storageService.storeFile(file);
+
+        // Парсинг режима
+        CallRecord.ProcessingMode mode = CallRecord.ProcessingMode.TURBO;
+        try {
+            mode = CallRecord.ProcessingMode.valueOf(modeStr.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            log.warn("Неизвестный режим обработки: {}, используем TURBO по умолчанию", modeStr);
+        }
 
         CallRecord record = CallRecord.builder()
                 .user(currentUser)
                 .originalAudioPath(filePath)
                 .status(CallRecord.RecordStatus.UPLOADED)
+                .processingMode(mode) // Сохранение режима
                 .build();
         record = callRecordRepository.save(record);
 
@@ -69,7 +80,8 @@ public class CallController {
 
         return ResponseEntity.ok(Map.of(
                 "message", "Файл принят в обработку",
-                "callRecordId", record.getId()
+                "callRecordId", record.getId(),
+                "mode", mode.name()
         ));
     }
 
@@ -78,7 +90,6 @@ public class CallController {
         User currentUser = getCurrentUser();
         List<CallRecord> records = callRecordRepository.findAllByUserIdOrderByCreatedAtDesc(currentUser.getId());
         
-        // Используем явный цикл, если Stream вызывает ошибки инференса
         List<CallRecordDto> dtos = new ArrayList<>();
         for (CallRecord r : records) {
             dtos.add(convertToDto(r));
@@ -91,7 +102,6 @@ public class CallController {
         CallRecord record = getCallWithSecurityCheck(id);
         List<TranscriptSegment> entities = segmentRepository.findAllByCallRecordIdOrderByStartTimeAsc(id);
 
-        // Явно указываем тип TranscriptSegmentDto в Stream
         List<TranscriptSegmentDto> segmentDtos = entities.stream()
             .map((TranscriptSegment s) -> {
                 List<String> piiList = (s.getPiiTypes() != null && !s.getPiiTypes().isEmpty())
@@ -186,6 +196,7 @@ public class CallController {
                 .originalAudioPath(r.getOriginalAudioPath())
                 .durationSeconds(r.getDurationSeconds())
                 .status(r.getStatus())
+                .processingMode(r.getProcessingMode() != null ? r.getProcessingMode().name() : "TURBO") // Передача режима
                 .createdAt(r.getCreatedAt())
                 .build();
     }

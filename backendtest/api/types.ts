@@ -25,11 +25,14 @@ export type RecordStatus =
   | "COMPLETED"
   | "ERROR";
 
+export type ProcessingMode = "TURBO" | "SMART"; // <-- ДОБАВЛЕН ТИП РЕЖИМА
+
 export interface CallRecordDto {
   id: number;
   originalAudioPath: string;
   durationSeconds: number;
   status: RecordStatus;
+  processingMode: ProcessingMode; // <-- ДОБАВЛЕНО ПОЛЕ
   createdAt: string;
 }
 
@@ -41,7 +44,7 @@ export interface TranscriptSegmentDto {
   originalText: string;
   redactedText: string;
   containsPii: boolean;
-  piiTypes: string[]; // <-- ДОБАВЛЕНО ПОЛЕ
+  piiTypes: string[];
 }
 
 export interface CallDetailsDto {
@@ -54,4 +57,9 @@ export interface StatsResponse {
   totalCallsProcessed: number;
   totalPiiIncidentsFound: number;
   piiTypeDistribution: Record<string, number>;
+}
+
+export interface TestModel {
+  id: number;
+  name: string;
 }

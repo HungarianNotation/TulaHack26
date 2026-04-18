@@ -27,7 +27,14 @@ public class TranscriptionService {
 
         try {
             String pythonUrl = "http://python-stt:8000/transcribe";
-            Map<String, String> request = Map.of("file_path", record.getOriginalAudioPath());
+            
+            // Получаем режим обработки
+            String modeStr = record.getProcessingMode() != null ? record.getProcessingMode().name().toLowerCase() : "turbo";
+            
+            Map<String, String> request = Map.of(
+                    "file_path", record.getOriginalAudioPath(),
+                    "mode", modeStr // Передаем режим в Python API
+            );
 
             PythonResponse response = restTemplate.postForObject(pythonUrl, request, PythonResponse.class);
 
@@ -47,7 +54,6 @@ public class TranscriptionService {
                             .build();
                     segmentRepository.save(ts);
                     
-                    // Обновляем длительность записи по последнему сегменту
                     record.setDurationSeconds(s.end().intValue());
                 }
                 record.setStatus(CallRecord.RecordStatus.COMPLETED);
