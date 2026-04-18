@@ -29,8 +29,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.20"
-          memory: 1024M
+          cpus: "0.5"
+          memory: 500M
     logging: *default-logging
     networks:
       - kamp-network
@@ -53,8 +53,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "1.50"
-          memory: 1024M
+          cpus: "0.5"
+          memory: 500M
     logging: *default-logging
     networks:
       - kamp-network
