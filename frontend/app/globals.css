@@ -2,7 +2,7 @@
 @plugin "daisyui";
 
 :root {
-  --background: hsla(242, 6%, 95%, 1);
+  --background: hsla(242, 6%, 90%, 1);
   --background-secondary: hsla(242, 6%, 92%, 0.7);
   --secondary-color: hsla(30, 5%, 70%, 1);
   --accent-color: hsla(240, 80%, 65%, 1);

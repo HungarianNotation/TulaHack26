@@ -15,29 +15,30 @@ export default function RegisterPage() {
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
         setError('');
-
         if (!email || !password || !confirmPassword) {
         setError('All fields are required');
         return;
         }
-        if (password !== confirmPassword) {
-        setError('Passwords do not match');
+        if (!email.includes('@')) {
+        setError('Please enter a valid email address');
         return;
         }
         if (password.length < 6) {
         setError('Password must be at least 6 characters');
         return;
         }
-
-        // API регистрации
+        if (password !== confirmPassword) {
+        setError('Passwords do not match');
+        return;
+        }
         console.log('Registering with:', { email, password });
         alert('Registration successful! (demo)');
     };
 
     return (
-        <div className="min-h-screen bg-custom-bg-main flex items-center justify-center p-4">
+        <div className="w-full max-w-md p-4 pointer-events-auto">
         <div
-            className="card w-full max-w-md bg-custom-bg-secondary shadow-lg"
+            className="card w-full bg-custom-bg-secondary shadow-lg"
             style={{ borderRadius: 'var(--radius-card)' }}
         >
             <div className="card-body p-8">
@@ -45,13 +46,10 @@ export default function RegisterPage() {
                 <h1 className="text-3xl font-bold text-custom-main">Создать аккаунт</h1>
                 <p className="text-custom-secondary mt-2">Зарегистрируйтесь, чтобы начать</p>
             </div>
-
             <form onSubmit={handleSubmit} className="space-y-6">
-                {/* Email */}
+                {/* поля – как в предыдущей версии */}
                 <div>
-                <label className="block text-custom-main text-sm font-medium mb-2">
-                    Почта
-                </label>
+                <label className="block text-custom-main text-sm font-medium mb-2">Почта</label>
                 <div className="relative">
                     <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-custom-secondary" />
                     <input
@@ -64,12 +62,8 @@ export default function RegisterPage() {
                     />
                 </div>
                 </div>
-
-                {/* Пароль */}
                 <div>
-                <label className="block text-custom-main text-sm font-medium mb-2">
-                    Пароль
-                </label>
+                <label className="block text-custom-main text-sm font-medium mb-2">Пароль</label>
                 <div className="relative">
                     <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-custom-secondary" />
                     <input
@@ -89,12 +83,8 @@ export default function RegisterPage() {
                     </button>
                 </div>
                 </div>
-
-                {/* Подтверждение пароля */}
                 <div>
-                <label className="block text-custom-main text-sm font-medium mb-2">
-                    Подтверждение пароля
-                </label>
+                <label className="block text-custom-main text-sm font-medium mb-2">Подтверждение пароля</label>
                 <div className="relative">
                     <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-custom-secondary" />
                     <input
@@ -114,15 +104,11 @@ export default function RegisterPage() {
                     </button>
                 </div>
                 </div>
-
-                {/* Ошибка */}
                 {error && (
                 <div className="bg-red-500/10 text-red-500 text-sm text-center py-2 rounded-full">
                     {error}
                 </div>
                 )}
-
-                {/* Кнопка регистрации */}
                 <button
                 type="submit"
                 className="btn btn-primary w-full gap-2 mt-8"
@@ -132,7 +118,6 @@ export default function RegisterPage() {
                 Зарегистрироваться
                 </button>
             </form>
-
             <div className="mt-6 text-center text-custom-secondary text-sm">
                 Уже есть аккаунт?{' '}
                 <Link href="/login" className="text-custom-accent hover:underline">
