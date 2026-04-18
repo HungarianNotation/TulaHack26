@@ -1,20 +1,281 @@
-File: ./python-stt/main.py
+File: ./python-stt/app/pii_analysis.py
+import re
+from natasha import (
+    Segmenter, MorphVocab, NewsEmbedding, 
+    NewsNERTagger, Doc
+)
+
+# Инициализация Natasha (NLP)
+segmenter = Segmenter()
+morph_vocab = MorphVocab()
+emb = NewsEmbedding()
+ner_tagger = NewsNERTagger(emb)
+
+NUMBER_MAP = {
+    'ноль': '0', 'один': '1', 'одна': '1', 'два': '2', 'две': '2',
+    'три': '3', 'четыре': '4', 'пять': '5', 'шесть': '6',
+    'семь': '7', 'восемь': '8', 'девять': '9', 'десять': '10',
+    'одиннадцать': '11', 'двенадцать': '12', 'тринадцать': '13',
+    'четырнадцать': '14', 'пятнадцать': '15', 'шестнадцать': '16',
+    'семнадцать': '17', 'восемнадцать': '18', 'девятнадцать': '19',
+    'двадцать': '20', 'тридцать': '30', 'сорок': '40', 'пятьдесят': '50',
+    'шестьдесят': '60', 'семьдесят': '70', 'восемьдесят': '80', 'девяносто': '90',
+    'сто': '100', 'двести': '200', 'триста': '300', 'четыреста': '400',
+    'пятьсот': '500', 'шестьсот': '600', 'семьсот': '700', 'восемьсот': '800', 'девятьсот': '900',
+    'плюс': '+'
+}
+
+def find_pii_words(vosk_words):
+    """
+    Полный анализ текста (Full-text Analysis) для точного поиска PII.
+    Принимает список dict от Vosk: [{'word': '...', 'start': X, 'end': Y}, ...]
+    Возвращает dict: { глобальный_индекс_слова: set('PHONE', 'NAME', ...) }
+    """
+    pii_map = {}
+    if not vosk_words:
+        return pii_map
+        
+    def mark_pii(char_start, char_end, mapping_dict, pii_type):
+        """Вспомогательная функция для пометки слов как PII по индексам символов"""
+        for char_idx in range(char_start, char_end):
+            w_idx = mapping_dict.get(char_idx)
+            if w_idx is not None:
+                if w_idx not in pii_map:
+                    pii_map[w_idx] = set()
+                pii_map[w_idx].add(pii_type)
+
+    # === ШАГ 1: Оригинальный текст для Natasha (Имена, Адреса) ===
+    orig_text = ""
+    orig_char_to_word = {}
+    for i, w in enumerate(vosk_words):
+        start_idx = len(orig_text)
+        orig_text += w['word'] + " "
+        for j in range(start_idx, len(orig_text)):
+            orig_char_to_word[j] = i
+            
+    doc = Doc(orig_text)
+    doc.segment(segmenter)
+    doc.tag_ner(ner_tagger)
+    
+    for span in doc.spans:
+        if span.type in ['PER', 'LOC']:
+            p_type = "NAME" if span.type == 'PER' else "ADDRESS"
+            mark_pii(span.start, span.stop, orig_char_to_word, p_type)
+
+    # === ШАГ 2: Нормализованный текст для регулярок (Телефоны, Паспорта) ===
+    norm_text = ""
+    norm_char_to_word = {}
+    for i, w in enumerate(vosk_words):
+        clean_w = re.sub(r'[^\w\s\+]', '', w['word'].lower())
+        mapped_w = NUMBER_MAP.get(clean_w, clean_w)
+        
+        start_idx = len(norm_text)
+        norm_text += mapped_w + " "
+        for j in range(start_idx, len(norm_text)):
+            norm_char_to_word[j] = i
+
+    # Сжимаем пробелы между цифрами (squash) для работы регулярки, 
+    # сохраняя связь с оригинальным индексом слова
+    squashed_text = ""
+    squashed_to_orig = {}
+    i = 0
+    while i < len(norm_text):
+        char = norm_text[i]
+        # Пропускаем пробелы, если слева и справа стоят цифры или знак плюса
+        if char == ' ' and i > 0 and i < len(norm_text) - 1:
+            left_char = norm_text[i-1]
+            right_char = norm_text[i+1]
+            if (left_char.isdigit() or left_char == '+') and right_char.isdigit():
+                i += 1 
+                continue
+                
+        squashed_to_orig[len(squashed_text)] = norm_char_to_word.get(i)
+        squashed_text += char
+        i += 1
+
+    patterns = {
+        "PHONE": r"(\+7|8|7)\d{7,11}",
+        "PASSPORT": r"\b\d{4}\s?\d{6}\b",
+        "EMAIL": r"[\w\.-]+@[\w\.-]+\.\w+"
+    }
+    
+    for p_type, p_regex in patterns.items():
+        for match in re.finditer(p_regex, squashed_text):
+            mark_pii(match.start(), match.end(), squashed_to_orig, p_type)
+
+    return pii_map
+
+============================================================
+
+
+File: ./python-stt/app/transcription.py
 import os
 import json
 import wave
 import re
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, UploadFile, File
 from pydub import AudioSegment
 from vosk import Model, KaldiRecognizer
+from .pii_analysis import find_pii_words
 
-# Для поиска имен и адресов (PII)
-from natasha import (
-    Segmenter, MorphVocab, NewsEmbedding, 
-    NewsNERTagger, Doc  # Исправлено имя NewsNERTagger
-)
+# Инициализация роутера для подключения в main.py
+router = APIRouter()
 
-app = FastAPI()
+# Настройка путей (согласно твоей структуре папка называется vosk-model)
+MODEL_PATH = "vosk-model"
+REDACTED_DIR = "redacted"
+
+if not os.path.exists(MODEL_PATH):
+    raise Exception(f"Vosk model not found at {os.path.abspath(MODEL_PATH)}! Проверьте имя папки.")
+
+# Загрузка модели в память при старте сервиса
+model = Model(MODEL_PATH)
+
+@router.post("/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    """Эндпоинт для приема аудиофайла и возврата анонимизированного транскрипта"""
+    temp_input = f"temp_in_{file.filename}"
+    
+    # Сохраняем входящий поток во временный файл
+    with open(temp_input, "wb") as buffer:
+        content = await file.read()
+        buffer.write(content)
+    
+    try:
+        # Запуск основного процесса обработки
+        result = transcribe(temp_input)
+        return result
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+    finally:
+        # Очистка временного входного файла
+        if os.path.exists(temp_input):
+            os.remove(temp_input)
+
+def transcribe(file_path):
+    """Основная логика STT и обработки PII"""
+    try:
+        # 1. Подготовка аудио (Vosk требует 16kHz Mono PCM)
+        audio = AudioSegment.from_file(file_path)
+        audio = audio.set_frame_rate(16000).set_channels(1)
+        
+        temp_wav = f"process_{os.path.basename(file_path)}.wav"
+        audio.export(temp_wav, format="wav")
+
+        wf = wave.open(temp_wav, "rb")
+        rec = KaldiRecognizer(model, wf.getframerate())
+        rec.SetWords(True)
+
+        # Посекундное распознавание
+        results = []
+        while True:
+            data = wf.readframes(4000)
+            if len(data) == 0:
+                break
+            if rec.AcceptWaveform(data):
+                res = json.loads(rec.Result())
+                if 'result' in res:
+                    results.extend(res['result'])
+
+        final_res = json.loads(rec.FinalResult())
+        if 'result' in final_res:
+            results.extend(final_res['result'])
+        
+        wf.close()
+        if os.path.exists(temp_wav):
+            os.remove(temp_wav)
+
+        if not results:
+            return {"status": "COMPLETED", "segments": [], "redactedFile": None}
+
+        # 2. Анализ PII и точечная замена звука на тишину
+        # Функция find_pii_words возвращает словарь {index_слова: [типы_pii]}
+        pii_map = find_pii_words(results)
+        redacted_audio = audio 
+        
+        for word_idx in pii_map.keys():
+            w = results[word_idx]
+            # Переводим секунды в миллисекунды для pydub
+            start_ms = int(w['start'] * 1000)
+            end_ms = int(w['end'] * 1000)
+            
+            # Защита от выхода за границы
+            if end_ms > len(redacted_audio): 
+                end_ms = len(redacted_audio)
+                
+            silence = AudioSegment.silent(duration=(end_ms - start_ms))
+            redacted_audio = redacted_audio[:start_ms] + silence + redacted_audio[end_ms:]
+
+        # 3. Группировка слов в сегменты по 15 штук для UI
+        segments = []
+        chunk_size = 15 
+        
+        for i in range(0, len(results), chunk_size):
+            chunk = results[i:i + chunk_size]
+            start_time = chunk[0]['start']
+            end_time = chunk[-1]['end']
+            
+            original_text_parts = []
+            redacted_text_parts = []
+            chunk_pii_types = set()
+            
+            for j, w in enumerate(chunk):
+                global_idx = i + j
+                original_text_parts.append(w['word'])
+                
+                if global_idx in pii_map:
+                    redacted_text_parts.append("[УДАЛЕНО]")
+                    chunk_pii_types.update(pii_map[global_idx])
+                else:
+                    redacted_text_parts.append(w['word'])
+            
+            # Красивое форматирование текста
+            red_text = " ".join(redacted_text_parts)
+            red_text = re.sub(r'(\[УДАЛЕНО\]\s*)+', '[ДАННЫЕ УДАЛЕНЫ] ', red_text).strip()
+
+            segments.append({
+                "speaker": 1,
+                "start": start_time,
+                "end": end_time,
+                "originalText": " ".join(original_text_parts),
+                "redactedText": red_text,
+                "containsPii": len(chunk_pii_types) > 0,
+                "piiTypes": list(chunk_pii_types)
+            })
+
+        # 4. Сохранение анонимизированного аудио
+        redacted_filename = f"redacted_{os.path.basename(file_path)}.wav"
+        os.makedirs(REDACTED_DIR, exist_ok=True)
+        redacted_path = os.path.join(REDACTED_DIR, redacted_filename)
+        
+        redacted_audio.export(redacted_path, format="wav")
+
+        # 5. Сбор финальной статистики
+        pii_counts = {}
+        for seg in segments:
+            for p_type in seg["piiTypes"]:
+                pii_counts[p_type] = pii_counts.get(p_type, 0) + 1
+
+        return {
+            "status": "COMPLETED",
+            "segments": segments,
+            "redactedFile": redacted_filename,
+            "stats": {
+                "total_incidents": sum(pii_counts.values()),
+                "distribution": pii_counts
+            }
+        }
+
+    except Exception as e:
+        print(f"STT Error inside transcribe function: {e}")
+        raise e
+
+============================================================
+
+
+File: ./python-stt/app/services.py
+import os
+from vosk import Model
 
 # Инициализация Vosk
 MODEL_PATH = "/app/vosk-model"
@@ -24,138 +285,41 @@ if os.path.exists(MODEL_PATH):
 else:
     print(f"Ошибка: Модель не найдена в {MODEL_PATH}")
 
-# Инициализация Natasha (NLP)
-segmenter = Segmenter()
-morph_vocab = MorphVocab()
-emb = NewsEmbedding()
-ner_tagger = NewsNERTagger(emb) # Исправлено имя
+def get_vosk_model():
+    return model
+
+
+============================================================
+
+
+File: ./python-stt/app/__init__.py
+
+
+============================================================
+
+
+File: ./python-stt/app/models.py
+from pydantic import BaseModel
 
 class TranscribeRequest(BaseModel):
     file_path: str
 
-def analyze_pii(text):
-    """Ищет ПДн и возвращает список найденных сущностей"""
-    found_pii = []
-    
-    # 1. Регулярные выражения (ИНН, СНИЛС, Телефоны, Паспорт)
-    patterns = {
-        "PHONE": r"(\+7|8|7)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}",
-        "PASSPORT": r"\b\d{4}\s\d{6}\b",
-        "INN": r"\b\d{10}\b|\b\d{12}\b",
-        "SNILS": r"\b\d{3}-\d{3}-\d{3}\s\d{2}\b",
-        "EMAIL": r"[\w\.-]+@[\w\.-]+\.\w+"
-    }
-    
-    for p_type, p_regex in patterns.items():
-        matches = re.finditer(p_regex, text)
-        for m in matches:
-            found_pii.append({"type": p_type, "value": m.group()})
 
-    # 2. Natasha NER (Имена, Адреса)
-    doc = Doc(text)
-    doc.segment(segmenter)
-    doc.tag_ner(ner_tagger)
-    
-    for span in doc.spans:
-        if span.type == 'PER':
-            found_pii.append({"type": "NAME", "value": span.text})
-        elif span.type == 'LOC':
-            found_pii.append({"type": "ADDRESS", "value": span.text})
-            
-    return found_pii
+============================================================
 
-@app.post("/transcribe")
-async def transcribe(request: TranscribeRequest):
-    if not model:
-        raise HTTPException(status_code=500, detail="Vosk модель не загружена")
 
-    if not os.path.exists(request.file_path):
-        raise HTTPException(status_code=404, detail=f"Файл не найден: {request.file_path}")
+File: ./python-stt/main.py
+from fastapi import FastAPI
+import uvicorn
+from app.transcription import router as transcription_router
 
-    try:
-        # 1. Загрузка аудио (AudioSegment сам определит m4a, mp3, wav через ffmpeg)
-        audio = AudioSegment.from_file(request.file_path)
-        
-        # Сохраняем временную копию в PCM для Vosk
-        temp_wav = "/tmp/to_vosk.wav"
-        audio.set_frame_rate(16000).set_channels(1).set_sample_width(2).export(temp_wav, format="wav")
+app = FastAPI()
 
-        # 2. Распознавание Vosk
-        wf = wave.open(temp_wav, "rb")
-        rec = KaldiRecognizer(model, wf.getframerate())
-        rec.SetWords(True) 
+app.include_router(transcription_router)
 
-        results = []
-        while True:
-            data = wf.readframes(4000)
-            if len(data) == 0: break
-            if rec.AcceptWaveform(data):
-                res = json.loads(rec.Result())
-                if 'result' in res: results.extend(res['result'])
-        
-        final_res = json.loads(rec.FinalResult())
-        if 'result' in final_res: results.extend(final_res['result'])
-        wf.close()
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 
-        # 3. Обработка сегментов и "запикивание"
-        segments = []
-        # Важно: работаем с копией для редактирования
-        redacted_audio = audio 
-        
-        # Группируем слова для контекста NER
-        chunk_size = 7
-        for i in range(0, len(results), chunk_size):
-            chunk = results[i:i + chunk_size]
-            original_text = " ".join([w['word'] for w in chunk])
-            
-            pii_list = analyze_pii(original_text)
-            has_pii = len(pii_list) > 0
-            
-            start_time = chunk[0]['start']
-            end_time = chunk[-1]['end']
-            
-            redacted_text = original_text
-            if has_pii:
-                redacted_text = "[ДАННЫЕ УДАЛЕНЫ]"
-                
-                # Переводим секунды в миллисекунды для pydub
-                start_ms = int(start_time * 1000)
-                end_ms = int(end_time * 1000)
-                
-                # Накладываем тишину на этот участок
-                silence = AudioSegment.silent(duration=(end_ms - start_ms))
-                redacted_audio = redacted_audio[:start_ms] + silence + redacted_audio[end_ms:]
-
-            segments.append({
-                "speaker": 1,
-                "start": start_time,
-                "end": end_time,
-                "originalText": original_text,
-                "redactedText": redacted_text,
-                "containsPii": has_pii
-            })
-
-        # 4. Сохранение результата
-        # Меняем папку /original/ на /redacted/ и форсируем расширение .wav
-        base_redacted_path = request.file_path.replace("/original/", "/redacted/")
-        redacted_file_path = os.path.splitext(base_redacted_path)[0] + ".wav"
-        
-        os.makedirs(os.path.dirname(redacted_file_path), exist_ok=True)
-        
-        # Экспортируем в WAV (самый надежный формат для плеереров)
-        redacted_audio.export(redacted_file_path, format="wav")
-
-        # Удаляем временный файл
-        if os.path.exists(temp_wav): os.remove(temp_wav)
-
-        return {
-            "redactedAudioPath": redacted_file_path,
-            "segments": segments
-        }
-
-    except Exception as e:
-        print(f"Ошибка при обработке: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 ============================================================
 
@@ -186,36 +350,29 @@ import lombok.*;
 
 @Entity
 @Table(name = "transcript_segments")
-@Getter @Setter
-@NoArgsConstructor @AllArgsConstructor
-@Builder
+@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class TranscriptSegment {
-
-    @Id 
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "call_record_id", nullable = false)
     private CallRecord callRecord;
 
-    // Кто говорит: 1 (звонящий) или 2 (оператор)
     private Integer speakerId; 
-
-    // Таймкоды в миллисекундах или секундах (Float)
     private Float startTime;
     private Float endTime;
 
-    // Текст до обработки LLM (грязный)
     @Column(columnDefinition = "TEXT")
     private String originalText;
 
-    // Текст после цензуры (чистый, например: "Меня зовут [ИМЯ]")
     @Column(columnDefinition = "TEXT")
     private String redactedText;
 
-    // Флаг для фронта: если true, значит в этой фразе были удалены ПДн (удобно для фильтрации/подсветки)
-    private Boolean containsPii; 
+    private Boolean containsPii;
+    
+    @Column(name = "pii_types")
+    private String piiTypes; // Храним как "PHONE,NAME"
 }
 
 ============================================================
@@ -634,19 +791,14 @@ public class VoskService {
 File: ./backend/demo/src/main/java/com/example/demo/services/TranscriptionService.java
 package com.example.demo.services;
 
-import com.example.demo.DTO.PythonSegment;
-import com.example.demo.models.CallRecord;
-import com.example.demo.models.TranscriptSegment;
-import com.example.demo.repository.CallRecordRepository;
-import com.example.demo.repository.TranscriptSegmentRepository;
+import com.example.demo.DTO.*;
+import com.example.demo.models.*;
+import com.example.demo.repository.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
-import com.example.demo.DTO.PythonResponse;
-import com.example.demo.DTO.PythonDetailedSegment;
-
 import java.util.Map;
 
 @Service
@@ -656,47 +808,47 @@ public class TranscriptionService {
 
     private final CallRecordRepository callRecordRepository;
     private final TranscriptSegmentRepository segmentRepository;
-    private final RestTemplate restTemplate = new RestTemplate(); // Для вызова Python
+    private final RestTemplate restTemplate = new RestTemplate();
 
     @Async("transcriptionTaskExecutor")
-public void processAudioAsync(Long callRecordId) {
-    CallRecord record = callRecordRepository.findById(callRecordId).orElseThrow();
-    record.setStatus(CallRecord.RecordStatus.TRANSCRIBING);
-    callRecordRepository.save(record);
+    public void processAudioAsync(Long callRecordId) {
+        CallRecord record = callRecordRepository.findById(callRecordId).orElseThrow();
+        record.setStatus(CallRecord.RecordStatus.TRANSCRIBING);
+        callRecordRepository.save(record);
 
-    try {
-        String pythonUrl = "http://python-stt:8000/transcribe";
-        Map<String, String> request = Map.of("file_path", record.getOriginalAudioPath());
+        try {
+            String pythonUrl = "http://python-stt:8000/transcribe";
+            Map<String, String> request = Map.of("file_path", record.getOriginalAudioPath());
 
-        // 1. Вызываем Python и получаем полный анализ
-        PythonResponse response = restTemplate.postForObject(pythonUrl, request, PythonResponse.class);
+            PythonResponse response = restTemplate.postForObject(pythonUrl, request, PythonResponse.class);
 
-        if (response != null) {
-            // 2. Обновляем путь к анонимизированному аудио
-            record.setRedactedAudioPath(response.redacted_audio_path());
-            
-            // 3. Сохраняем сегменты с типами ПДн
-            for (PythonDetailedSegment s : response.segments()) {
-                TranscriptSegment ts = TranscriptSegment.builder()
-                        .callRecord(record)
-                        .speakerId(s.speaker())
-                        .startTime(s.start())
-                        .endTime(s.end())
-                        .originalText(s.original_text())
-                        .redactedText(s.redacted_text())
-                        .containsPii(s.contains_pii())
-                        // Можно добавить поле PiiTypes в БД, если нужно
-                        .build();
-                segmentRepository.save(ts);
+            if (response != null) {
+                record.setRedactedAudioPath(response.redactedAudioPath());
+                
+                for (PythonDetailedSegment s : response.segments()) {
+                    TranscriptSegment ts = TranscriptSegment.builder()
+                            .callRecord(record)
+                            .speakerId(s.speaker())
+                            .startTime(s.start())
+                            .endTime(s.end())
+                            .originalText(s.originalText())
+                            .redactedText(s.redactedText())
+                            .containsPii(s.containsPii())
+                            .piiTypes(s.piiTypes() != null ? String.join(",", s.piiTypes()) : "")
+                            .build();
+                    segmentRepository.save(ts);
+                    
+                    // Обновляем длительность записи по последнему сегменту
+                    record.setDurationSeconds(s.end().intValue());
+                }
+                record.setStatus(CallRecord.RecordStatus.COMPLETED);
             }
+        } catch (Exception e) {
+            log.error("STT Error: {}", e.getMessage());
+            record.setStatus(CallRecord.RecordStatus.ERROR);
         }
-
-        record.setStatus(CallRecord.RecordStatus.COMPLETED);
-    } catch (Exception e) {
-        record.setStatus(CallRecord.RecordStatus.ERROR);
+        callRecordRepository.save(record);
     }
-    callRecordRepository.save(record);
-}
 }
 
 ============================================================
@@ -709,6 +861,7 @@ import com.example.demo.DTO.CallDetailsDto;
 import com.example.demo.DTO.CallRecordDto;
 import com.example.demo.DTO.TranscriptSegmentDto;
 import com.example.demo.models.CallRecord;
+import com.example.demo.models.TranscriptSegment;
 import com.example.demo.models.User;
 import com.example.demo.repository.CallRecordRepository;
 import com.example.demo.repository.TranscriptSegmentRepository;
@@ -731,6 +884,9 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -747,9 +903,6 @@ public class CallController {
     private final AudioStorageService storageService;
     private final TranscriptionService transcriptionService;
 
-    /**
-     * Вспомогательный метод получения текущего пользователя из Security Context
-     */
     private User getCurrentUser() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         String login = auth.getName();
@@ -757,18 +910,11 @@ public class CallController {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Пользователь не найден"));
     }
 
-    /**
-     * Загрузка нового аудиофайла
-     */
     @PostMapping("/upload")
     public ResponseEntity<?> uploadFile(@RequestParam("file") MultipartFile file) {
         User currentUser = getCurrentUser();
-        log.info("Пользователь {} загружает файл: {}", currentUser.getLogin(), file.getOriginalFilename());
-
-        // 1. Сохраняем физически на диск (папка uploads/original)
         String filePath = storageService.storeFile(file);
 
-        // 2. Создаем запись в БД со статусом UPLOADED
         CallRecord record = CallRecord.builder()
                 .user(currentUser)
                 .originalAudioPath(filePath)
@@ -776,106 +922,119 @@ public class CallController {
                 .build();
         record = callRecordRepository.save(record);
 
-        // 3. Запускаем асинхронную обработку (STT + Redaction)
         transcriptionService.processAudioAsync(record.getId());
 
         return ResponseEntity.ok(Map.of(
-                "message", "Файл загружен и отправлен в обработку",
+                "message", "Файл принят в обработку",
                 "callRecordId", record.getId()
         ));
     }
 
-    /**
-     * Получение списка всех звонков текущего пользователя
-     */
     @GetMapping("/my")
     public ResponseEntity<List<CallRecordDto>> getMyCalls() {
         User currentUser = getCurrentUser();
         List<CallRecord> records = callRecordRepository.findAllByUserIdOrderByCreatedAtDesc(currentUser.getId());
         
-        List<CallRecordDto> dtos = records.stream().map(this::convertToDto).collect(Collectors.toList());
+        // Используем явный цикл, если Stream вызывает ошибки инференса
+        List<CallRecordDto> dtos = new ArrayList<>();
+        for (CallRecord r : records) {
+            dtos.add(convertToDto(r));
+        }
         return ResponseEntity.ok(dtos);
     }
 
-    /**
-     * Получение детальной информации о звонке (метаданные + все текстовые сегменты)
-     */
     @GetMapping("/{id}")
     public ResponseEntity<CallDetailsDto> getCallDetails(@PathVariable Long id) {
-        CallRecord record = getCallRecordWithSecurityCheck(id);
+        CallRecord record = getCallWithSecurityCheck(id);
+        List<TranscriptSegment> entities = segmentRepository.findAllByCallRecordIdOrderByStartTimeAsc(id);
 
-        List<TranscriptSegmentDto> segmentDtos = segmentRepository.findAllByCallRecordIdOrderByStartTimeAsc(id)
-                .stream().map(s -> TranscriptSegmentDto.builder()
-                        .id(s.getId())
-                        .speakerId(s.getSpeakerId())
-                        .startTime(s.getStartTime())
-                        .endTime(s.getEndTime())
-                        .originalText(s.getOriginalText())
-                        .redactedText(s.getRedactedText())
-                        .containsPii(s.getContainsPii())
-                        .build()
-                ).collect(Collectors.toList());
+        // Явно указываем тип TranscriptSegmentDto в Stream
+        List<TranscriptSegmentDto> segmentDtos = entities.stream()
+            .map((TranscriptSegment s) -> {
+                List<String> piiList = (s.getPiiTypes() != null && !s.getPiiTypes().isEmpty())
+                        ? Arrays.asList(s.getPiiTypes().split(","))
+                        : new ArrayList<String>();
+                        
+                return TranscriptSegmentDto.builder()
+                    .id(s.getId())
+                    .speakerId(s.getSpeakerId())
+                    .startTime(s.getStartTime())
+                    .endTime(s.getEndTime())
+                    .originalText(s.getOriginalText())
+                    .redactedText(s.getRedactedText())
+                    .containsPii(s.getContainsPii())
+                    .piiTypes(piiList)
+                    .build();
+            })
+            .collect(Collectors.toList());
 
-        return ResponseEntity.ok(CallDetailsDto.builder()
+        CallDetailsDto details = CallDetailsDto.builder()
                 .callRecord(convertToDto(record))
                 .segments(segmentDtos)
-                .build());
+                .build();
+
+        return ResponseEntity.ok(details);
     }
 
-    /**
-     * Стрим анонимизированного аудиофайла (для проигрывателя на фронтенде)
-     */
-    @GetMapping("/{id}/audio/redacted")
-    public ResponseEntity<Resource> getRedactedAudio(@PathVariable Long id) {
-        CallRecord record = getCallRecordWithSecurityCheck(id);
+    @GetMapping("/stats")
+    public ResponseEntity<?> getStats() {
+        User user = getCurrentUser();
+        List<CallRecord> records = callRecordRepository.findAllByUserIdOrderByCreatedAtDesc(user.getId());
+        
+        Map<String, Integer> piiDistribution = new HashMap<>();
+        int totalIncidents = 0;
 
-        if (record.getRedactedAudioPath() == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Анонимизированный файл еще не готов");
+        for (CallRecord r : records) {
+            for (TranscriptSegment s : r.getSegments()) {
+                if (s.getContainsPii() != null && s.getContainsPii() && s.getPiiTypes() != null) {
+                    String[] types = s.getPiiTypes().split(",");
+                    for (String type : types) {
+                        String cleanType = type.trim();
+                        if (!cleanType.isEmpty()) {
+                            piiDistribution.put(cleanType, piiDistribution.getOrDefault(cleanType, 0) + 1);
+                            totalIncidents++;
+                        }
+                    }
+                }
+            }
         }
 
-        return serveAudioFile(record.getRedactedAudioPath());
+        return ResponseEntity.ok(Map.of(
+            "totalCallsProcessed", records.size(),
+            "totalPiiIncidentsFound", totalIncidents,
+            "piiTypeDistribution", piiDistribution
+        ));
     }
 
-    /**
-     * Стрим оригинального аудиофайла
-     */
-    @GetMapping("/{id}/audio/original")
-    public ResponseEntity<Resource> getOriginalAudio(@PathVariable Long id) {
-        CallRecord record = getCallRecordWithSecurityCheck(id);
-        return serveAudioFile(record.getOriginalAudioPath());
+    @GetMapping("/{id}/audio/{type}")
+    public ResponseEntity<Resource> getAudio(@PathVariable Long id, @PathVariable String type) {
+        CallRecord record = getCallWithSecurityCheck(id);
+        String path = "redacted".equalsIgnoreCase(type) ? record.getRedactedAudioPath() : record.getOriginalAudioPath();
+
+        if (path == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Файл отсутствует");
+        }
+
+        try {
+            Path filePath = Paths.get(path);
+            Resource resource = new UrlResource(filePath.toUri());
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType("audio/wav"))
+                    .body(resource);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Ошибка чтения аудио");
+        }
     }
 
-    // --- Приватные вспомогательные методы ---
-
-    private CallRecord getCallRecordWithSecurityCheck(Long id) {
+    private CallRecord getCallWithSecurityCheck(Long id) {
         User currentUser = getCurrentUser();
         CallRecord record = callRecordRepository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Запись не найдена"));
 
         if (!record.getUser().getId().equals(currentUser.getId())) {
-            log.warn("Попытка несанкционированного доступа пользователем {} к записи {}", currentUser.getLogin(), id);
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Нет доступа к данной записи");
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Нет доступа");
         }
         return record;
-    }
-
-    private ResponseEntity<Resource> serveAudioFile(String path) {
-        try {
-            Path filePath = Paths.get(path);
-            Resource resource = new UrlResource(filePath.toUri());
-
-            if (!resource.exists() || !resource.isReadable()) {
-                throw new RuntimeException("Файл не найден или недоступен");
-            }
-
-            return ResponseEntity.ok()
-                    .contentType(MediaType.parseMediaType("audio/wav")) // Можно расширить до mpeg, если нужно
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + resource.getFilename() + "\"")
-                    .body(resource);
-        } catch (Exception e) {
-            log.error("Ошибка при чтении аудиофайла: {}", path, e);
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Ошибка при загрузке аудио");
-        }
     }
 
     private CallRecordDto convertToDto(CallRecord r) {
@@ -1203,12 +1362,9 @@ public record PythonDetailedSegment(
     Float end,
     @JsonProperty("originalText") String originalText,
     @JsonProperty("redactedText") String redactedText,
-    @JsonProperty("containsPii") Boolean containsPii
-) {
-    public String original_text() { return originalText; }
-    public String redacted_text() { return redactedText; }
-    public Boolean contains_pii() { return containsPii; }
-}
+    @JsonProperty("containsPii") Boolean containsPii,
+    @JsonProperty("piiTypes") List<String> piiTypes
+) {}
 
 ============================================================
 
@@ -1226,6 +1382,7 @@ package com.example.demo.DTO;
 
 import lombok.Builder;
 import lombok.Data;
+import java.util.List;
 
 @Data
 @Builder
@@ -1237,6 +1394,7 @@ public class TranscriptSegmentDto {
     private String originalText;
     private String redactedText;
     private Boolean containsPii;
+    private List<String> piiTypes; // ПРОВЕРЬТЕ ЭТО ПОЛЕ
 }
 
 ============================================================
@@ -1355,7 +1513,6 @@ import { authService } from "./api/auth-services";
 import { callService } from "./api/call-services";
 import { RegisterRequest } from "./api/types";
 
-// Эмуляция localStorage (оставляем как было)
 if (typeof localStorage === "undefined") {
   const storage: Record<string, string> = {};
   (globalThis as any).localStorage = {
@@ -1369,19 +1526,55 @@ if (typeof localStorage === "undefined") {
   };
 }
 
-// Вспомогательная функция для ожидания (sleep)
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Создаем тестовый файл, если его нет
+// Генерация валидного PCM 16kHz Mono WAV файла (2 секунды тишины)
+function generateSilentWav(filePath: string) {
+  const sampleRate = 16000;
+  const durationSeconds = 2;
+  const numSamples = sampleRate * durationSeconds;
+  const buffer = Buffer.alloc(44 + numSamples * 2); // 16-bit = 2 bytes per sample
+
+  // RIFF chunk descriptor
+  buffer.write("RIFF", 0);
+  buffer.writeUInt32LE(36 + numSamples * 2, 4);
+  buffer.write("WAVE", 8);
+
+  // fmt sub-chunk
+  buffer.write("fmt ", 12);
+  buffer.writeUInt32LE(16, 16); // Subchunk1Size (16 for PCM)
+  buffer.writeUInt16LE(1, 20); // AudioFormat (1 for PCM)
+  buffer.writeUInt16LE(1, 22); // NumChannels (1)
+  buffer.writeUInt32LE(sampleRate, 24); // SampleRate
+  buffer.writeUInt32LE(sampleRate * 2, 28); // ByteRate
+  buffer.writeUInt16LE(2, 32); // BlockAlign
+  buffer.writeUInt16LE(16, 34); // BitsPerSample
+
+  // data sub-chunk
+  buffer.write("data", 36);
+  buffer.writeUInt32LE(numSamples * 2, 40);
+
+  // Остальная часть буфера уже заполнена нулями (тишина) благодаря Buffer.alloc
+
+  fs.writeFileSync(filePath, buffer);
+}
+
 const TEST_AUDIO_PATH = "./meow.m4a";
+let isGeneratedSilentFile = false;
+
 if (!fs.existsSync(TEST_AUDIO_PATH)) {
-  console.log("⚠️ Тестовый аудиофайл не найден. Создаю валидный пустой WAV...");
-  // Байт-код минимального валидного WAV файла (1 секунда тишины)
-  const silentWav = Buffer.from(
-    "UklGRigAAABXQVZFRm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA== ",
-    "base64",
+  console.log(
+    "⚠️ Тестовый аудиофайл не найден. Создаю программно идеальный WAV (тишина 2 сек)...",
   );
-  fs.writeFileSync(TEST_AUDIO_PATH, silentWav);
+  console.log(
+    "💡 ВАЖНО: Так как файл состоит из тишины, Vosk ничего не распознает и PII не будет найдено!",
+  );
+  console.log(
+    "💡 Чтобы реально протестировать цензуру, положи файл с речью (например, с произнесением телефона 89001234567) по пути ./meow.wav\n",
+  );
+
+  generateSilentWav(TEST_AUDIO_PATH);
+  isGeneratedSilentFile = true;
 }
 
 async function runFullE2ETest() {
@@ -1391,7 +1584,7 @@ async function runFullE2ETest() {
   const mockUser: RegisterRequest = {
     login: `operator_${randomSuffix}`,
     password: "secure_password_123",
-    name: "Anna",
+    name: "Anna QA",
     company: "AituLabs",
   };
 
@@ -1408,28 +1601,33 @@ async function runFullE2ETest() {
     const recordId = uploadRes.callRecordId;
     console.log(`✅ Файл загружен. ID записи: ${recordId}`);
 
-    // --- ШАГ 3: ОЖИДАНИЕ ТРАНСКРИБАЦИИ (POLLING) ---
+    // --- ШАГ 3: ОЖИДАНИЕ ТРАНСКРИБАЦИИ ---
     console.log("\n3️⃣ Ожидание обработки (STT + PII Redaction)...");
     let isCompleted = false;
     let attempts = 0;
-    const maxAttempts = 15; // Ждем максимум 30 секунд (15 попыток * 2 сек)
+    const maxAttempts = 20;
 
     while (!isCompleted && attempts < maxAttempts) {
       const details = await callService.getCallDetails(recordId);
-      process.stdout.write(`⏳ Статус: ${details.callRecord.status}...\r`);
+      process.stdout.write(
+        `⏳ Статус: ${details.callRecord.status} (Попытка ${attempts + 1}/${maxAttempts})...\r`,
+      );
 
       if (details.callRecord.status === "COMPLETED") {
         isCompleted = true;
         console.log(`\n✅ Обработка завершена!`);
       } else if (details.callRecord.status === "ERROR") {
-        throw new Error("❌ Сервер вернул ошибку при обработке файла!");
+        throw new Error(
+          "\n❌ Сервер вернул ошибку при обработке файла (смотри логи Python STT)!",
+        );
       } else {
-        await delay(2000); // Ждем 2 секунды перед следующим запросом
+        await delay(3000);
         attempts++;
       }
     }
 
-    if (!isCompleted) throw new Error("❌ Превышено время ожидания обработки.");
+    if (!isCompleted)
+      throw new Error("\n❌ Превышено время ожидания обработки.");
 
     // --- ШАГ 4: ПРОВЕРКА РЕЗУЛЬТАТОВ (ТРАНСКРИПТ) ---
     console.log("\n4️⃣ Проверка результатов транскрибации...");
@@ -1438,11 +1636,17 @@ async function runFullE2ETest() {
     console.log(
       `Всего найдено сегментов диалога: ${finalDetails.segments.length}`,
     );
+    if (finalDetails.segments.length === 0) {
+      console.log(
+        "⚠️ Диалог пуст. (Это нормально, так как тестовый файл содержит тишину).",
+      );
+    }
 
-    // Выводим диалог в консоль для наглядности
     finalDetails.segments.forEach((seg) => {
-      const speaker = seg.speakerId === 1 ? "Клиент" : "Оператор";
-      const piiFlag = seg.containsPii ? "🔴 [PII FOUND]" : "🟢 [SAFE]";
+      const speaker = seg.speakerId === 1 ? "Спикер 1" : "Спикер 2";
+      const piiFlag = seg.containsPii
+        ? `🔴 [PII: ${seg.piiTypes.join(", ")}]`
+        : "🟢 [SAFE]";
       console.log(`[${seg.startTime} - ${seg.endTime}] ${speaker} ${piiFlag}:`);
       console.log(`   Оригинал: ${seg.originalText}`);
       if (seg.containsPii) {
@@ -1450,14 +1654,38 @@ async function runFullE2ETest() {
       }
     });
 
-    // --- ШАГ 5: ПРОВЕРКА АНОНИМИЗИРОВАННОГО АУДИО ---
-    console.log("\n5️⃣ Скачивание анонимизированного аудио...");
+    // --- ШАГ 5: ПРОВЕРКА СТАТИСТИКИ ---
+    console.log("\n5️⃣ Проверка API Статистики...");
+    const stats = await callService.getStats();
+    console.log(`✅ Статистика получена:`);
+    console.log(`   - Всего обработано звонков: ${stats.totalCallsProcessed}`);
+    console.log(`   - Найдено инцидентов PII: ${stats.totalPiiIncidentsFound}`);
+    console.log(
+      `   - Распределение: ${JSON.stringify(stats.piiTypeDistribution)}`,
+    );
+
+    // --- ШАГ 6: СКАЧИВАНИЕ АУДИО ---
+    console.log("\n6️⃣ Скачивание анонимизированного аудио...");
     const audioBuffer = await callService.getRedactedAudio(recordId);
     console.log(
       `✅ Аудио успешно скачано! Размер: ${audioBuffer.byteLength} байт.`,
     );
 
-    // Успешный конец
+    // --- ШАГ 7: НЕГАТИВНЫЙ ТЕСТ ---
+    console.log("\n7️⃣ Проверка обработки ошибок (404 Not Found)...");
+    try {
+      await callService.getCallDetails(9999999);
+      throw new Error("Ожидалась ошибка 404, но сервер вернул 200!");
+    } catch (error: any) {
+      if (error.response && error.response.status === 404) {
+        console.log(
+          "✅ Сервер корректно вернул 404 для неизвестного ID записи.",
+        );
+      } else {
+        throw error;
+      }
+    }
+
     console.log(
       "\n🏁 E2E ТЕСТИРОВАНИЕ ЗАВЕРШЕНО УСПЕШНО! ВСЕ СИСТЕМЫ РАБОТАЮТ!",
     );
@@ -1473,9 +1701,9 @@ async function runFullE2ETest() {
     }
     process.exit(1);
   } finally {
-    // Чистим за собой
     authService.logout();
-    if (fs.readFileSync(TEST_AUDIO_PATH, "utf-8") === "dummy audio content") {
+    // Удаляем сгенерированный тестовый файл, чтобы не мусорить
+    if (isGeneratedSilentFile && fs.existsSync(TEST_AUDIO_PATH)) {
       fs.unlinkSync(TEST_AUDIO_PATH);
     }
   }
@@ -1551,7 +1779,9 @@ export const testService = {
 
 
 File: ./backendtest/api/types.ts
-// Авторизация
+// File: ./backendtest/api/types.ts
+
+// --- Авторизация ---
 export interface AuthResponse {
   token: string;
 }
@@ -1568,32 +1798,7 @@ export interface LoginRequest {
   password?: string;
 }
 
-// Сущности БД (на будущее)
-export interface User {
-  id: number;
-  login: string;
-  name: string;
-  company: string;
-  apiToken: string;
-}
-
-export interface CallRecord {
-  id: number;
-  originalAudioPath: string;
-  redactedAudioPath?: string;
-  durationSeconds: number;
-  status: "UPLOADED" | "TRANSCRIBING" | "REDACTING" | "COMPLETED" | "ERROR";
-  createdAt: string;
-}
-
-export interface TestModel {
-  id: number;
-  name: string;
-}
-// File: ./backendtest/api/types.ts
-
-// ... (предыдущие типы AuthResponse, RegisterRequest и т.д. остаются) ...
-
+// --- Сущности API ---
 export type RecordStatus =
   | "UPLOADED"
   | "TRANSCRIBING"
@@ -1617,11 +1822,19 @@ export interface TranscriptSegmentDto {
   originalText: string;
   redactedText: string;
   containsPii: boolean;
+  piiTypes: string[]; // <-- ДОБАВЛЕНО ПОЛЕ
 }
 
 export interface CallDetailsDto {
   callRecord: CallRecordDto;
   segments: TranscriptSegmentDto[];
+}
+
+// --- Статистика ---
+export interface StatsResponse {
+  totalCallsProcessed: number;
+  totalPiiIncidentsFound: number;
+  piiTypeDistribution: Record<string, number>;
 }
 
 
@@ -1633,7 +1846,7 @@ File: ./backendtest/api/call-services.ts
 import FormData from "form-data";
 import fs from "fs";
 import { apiClient } from "./auth-services";
-import { CallDetailsDto, CallRecordDto } from "./types";
+import { CallDetailsDto, CallRecordDto, StatsResponse } from "./types";
 
 export const callService = {
   // 1. Загрузка файла
@@ -1646,11 +1859,7 @@ export const callService = {
     const response = await apiClient.post<{
       message: string;
       callRecordId: number;
-    }>("calls/upload", formData, {
-      headers: {
-        ...formData.getHeaders(),
-      },
-    });
+    }>("calls/upload", formData, { headers: { ...formData.getHeaders() } });
     return response.data;
   },
 
@@ -1666,11 +1875,17 @@ export const callService = {
     return response.data;
   },
 
-  // 4. Скачивание/проверка анонимизированного аудио
+  // 4. Скачивание анонимизированного аудио
   async getRedactedAudio(id: number): Promise<Buffer> {
     const response = await apiClient.get(`calls/${id}/audio/redacted`, {
-      responseType: "arraybuffer", // Получаем как бинарные данные
+      responseType: "arraybuffer",
     });
+    return response.data;
+  },
+
+  // 5. Получение статистики (ДОБАВЛЕНО)
+  async getStats(): Promise<StatsResponse> {
+    const response = await apiClient.get<StatsResponse>("calls/stats");
     return response.data;
   },
 };

@@ -1,6 +1,6 @@
-fastapi==0.103.2
-uvicorn==0.23.2
-pydantic==2.4.2
-pydub==0.25.1
-vosk==0.3.45
-natasha==1.6.0
+fastapi
+uvicorn
+python-multipart
+vosk
+pydub
+natasha
