@@ -74,4 +74,22 @@ Thumbs.db
 # MariaDB data
 maria_db/data/
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.Python
+venv/
+env/
+pip-log.txt
+pip-delete-this-arg.txt
+*.sqlite3
+*.db
+
+# Ignore everything in python-stt/ except vosk-model
+/python-stt/*
+!/python-stt/vosk-model/
+
 .env

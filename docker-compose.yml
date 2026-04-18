@@ -24,10 +24,36 @@ services:
       mariadb:
         condition: service_healthy
     restart: on-failure
+    volumes:
+      # Пробрасываем общую папку для файлов
+      # Убедись, что в Dockerfile для Java установлен WORKDIR /app
+      - ./uploads:/app/uploads
     deploy:
       resources:
         limits:
           cpus: "1.20"
+          memory: 1024M
+    logging: *default-logging
+    networks:
+      - kamp-network
+
+  # НОВЫЙ СЕРВИС ДЛЯ РАСПОЗНАВАНИЯ ГОЛОСА
+  python-stt:
+    build:
+      context: ./python-stt
+    container_name: python-stt
+    ports:
+      - "8000:8000"
+    restart: on-failure
+    volumes:
+      # Та же самая папка, чтобы пути в базе (напр. /app/uploads/...) совпадали у Java и Python
+      - ./uploads:/app/uploads
+      # Папка с моделью Vosk. Скачай и положи её рядом с docker-compose.yml
+      - ./python-stt/vosk-model:/app/vosk-model
+    deploy:
+      resources:
+        limits:
+          cpus: "1.50" # Vosk потребляет CPU во время распознавания
           memory: 1024M
     logging: *default-logging
     networks:

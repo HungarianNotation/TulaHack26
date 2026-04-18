@@ -9,6 +9,7 @@ find . -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.java" \) \
 -not -path "./.git/*" \
 -not -path "./frontend/node_modules/*" \
 -not -path "./backend/target/*" \
+-not -path "./backendtest/node_modules/*" \
 -not -path "./maria_db/*" \
 -print0 | while IFS= read -r -d $'\0' file; do
     echo "File: $file" >> "$OUTPUT_FILE"
