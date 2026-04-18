@@ -1,105 +1,87 @@
 import re
 from natasha import (
     Segmenter, MorphVocab, NewsEmbedding, 
-    NewsNERTagger, Doc
+    NamesExtractor, Doc
 )
 
-# Инициализация Natasha (NLP)
 segmenter = Segmenter()
 morph_vocab = MorphVocab()
 emb = NewsEmbedding()
-ner_tagger = NewsNERTagger(emb)
+names_extractor = NamesExtractor(morph_vocab)
 
-NUMBER_MAP = {
-    'ноль': '0', 'один': '1', 'одна': '1', 'два': '2', 'две': '2',
-    'три': '3', 'четыре': '4', 'пять': '5', 'шесть': '6',
-    'семь': '7', 'восемь': '8', 'девять': '9', 'десять': '10',
-    'одиннадцать': '11', 'двенадцать': '12', 'тринадцать': '13',
-    'четырнадцать': '14', 'пятнадцать': '15', 'шестнадцать': '16',
-    'семнадцать': '17', 'восемнадцать': '18', 'девятнадцать': '19',
-    'двадцать': '20', 'тридцать': '30', 'сорок': '40', 'пятьдесят': '50',
-    'шестьдесят': '60', 'семьдесят': '70', 'восемьдесят': '80', 'девяносто': '90',
-    'сто': '100', 'двести': '200', 'триста': '300', 'четыреста': '400',
-    'пятьсот': '500', 'шестьсот': '600', 'семьсот': '700', 'восемьсот': '800', 'девятьсот': '900',
-    'плюс': '+'
+# Список слов, которые ТОЧНО не являются именами (исключения для Natasha)
+STOP_NAMES = {'Добрый', 'День', 'Стоматологу', 'Приём', 'Записаться', 'Хотела'}
+
+NUMBER_WORDS = {
+    'ноль', 'один', 'одна', 'два', 'две', 'три', 'четыре', 'пять', 'шесть', 'семь',
+    'восемь', 'девять', 'десять', 'одиннадцать', 'двенадцать', 'тринадцать', 
+    'четырнадцать', 'пятнадцать', 'шестнадцать', 'семнадцать', 'восемнадцать', 
+    'девятнадцать', 'двадцать', 'тридцать', 'сорок', 'пятьдесят', 'шестьдесят',
+    'семьдесят', 'восемьдесят', 'девяносто', 'сто', 'двести', 'триста', 
+    'четыреста', 'пятьсот', 'шестьсот', 'семьсот', 'восемьсот', 'девятьсот', 'тысяча'
 }
 
+def is_digit_like(word):
+    w = word.lower()
+    return w.isdigit() or w in NUMBER_WORDS or w == '+'
+
 def find_pii_words(vosk_words):
-    """
-    Полный анализ текста (Full-text Analysis) для точного поиска PII.
-    Принимает список dict от Vosk: [{'word': '...', 'start': X, 'end': Y}, ...]
-    Возвращает dict: { глобальный_индекс_слова: set('PHONE', 'NAME', ...) }
-    """
     pii_map = {}
-    if not vosk_words:
-        return pii_map
-        
-    def mark_pii(char_start, char_end, mapping_dict, pii_type):
-        """Вспомогательная функция для пометки слов как PII по индексам символов"""
-        for char_idx in range(char_start, char_end):
-            w_idx = mapping_dict.get(char_idx)
-            if w_idx is not None:
-                if w_idx not in pii_map:
-                    pii_map[w_idx] = set()
-                pii_map[w_idx].add(pii_type)
+    if not vosk_words: return pii_map
 
-    # === ШАГ 1: Оригинальный текст для Natasha (Имена, Адреса) ===
-    orig_text = ""
-    orig_char_to_word = {}
-    for i, w in enumerate(vosk_words):
-        start_idx = len(orig_text)
-        orig_text += w['word'] + " "
-        for j in range(start_idx, len(orig_text)):
-            orig_char_to_word[j] = i
-            
-    doc = Doc(orig_text)
-    doc.segment(segmenter)
-    doc.tag_ner(ner_tagger)
+    # 1. Точный поиск Имен
+    text_parts = [w['word'].capitalize() for w in vosk_words]
+    full_text = " ".join(text_parts)
     
-    for span in doc.spans:
-        if span.type in ['PER', 'LOC']:
-            p_type = "NAME" if span.type == 'PER' else "ADDRESS"
-            mark_pii(span.start, span.stop, orig_char_to_word, p_type)
+    # Создаем карту: какой индекс символа к какому индексу слова относится
+    char_to_word = {}
+    current_char = 0
+    for i, word in enumerate(text_parts):
+        for j in range(current_char, current_char + len(word) + 1):
+            char_to_word[j] = i
+        current_char += len(word) + 1
 
-    # === ШАГ 2: Нормализованный текст для регулярок (Телефоны, Паспорта) ===
-    norm_text = ""
-    norm_char_to_word = {}
-    for i, w in enumerate(vosk_words):
-        clean_w = re.sub(r'[^\w\s\+]', '', w['word'].lower())
-        mapped_w = NUMBER_MAP.get(clean_w, clean_w)
-        
-        start_idx = len(norm_text)
-        norm_text += mapped_w + " "
-        for j in range(start_idx, len(norm_text)):
-            norm_char_to_word[j] = i
-
-    # Сжимаем пробелы между цифрами (squash) для работы регулярки, 
-    # сохраняя связь с оригинальным индексом слова
-    squashed_text = ""
-    squashed_to_orig = {}
-    i = 0
-    while i < len(norm_text):
-        char = norm_text[i]
-        # Пропускаем пробелы, если слева и справа стоят цифры или знак плюса
-        if char == ' ' and i > 0 and i < len(norm_text) - 1:
-            left_char = norm_text[i-1]
-            right_char = norm_text[i+1]
-            if (left_char.isdigit() or left_char == '+') and right_char.isdigit():
-                i += 1 
+    matches = names_extractor(full_text)
+    for match in matches:
+        first_word_idx = char_to_word.get(match.start)
+        if first_word_idx is not None:
+            # Проверка на стоп-слова
+            if text_parts[first_word_idx] in STOP_NAMES:
                 continue
                 
-        squashed_to_orig[len(squashed_text)] = norm_char_to_word.get(i)
-        squashed_text += char
-        i += 1
+            # Помечаем все слова, входящие в диапазон сущности
+            curr = match.start
+            while curr < match.stop:
+                idx = char_to_word.get(curr)
+                if idx is not None:
+                    if idx not in pii_map: pii_map[idx] = set()
+                    pii_map[idx].add("NAME")
+                curr += 1
 
-    patterns = {
-        "PHONE": r"(\+7|8|7)\d{7,11}",
-        "PASSPORT": r"\b\d{4}\s?\d{6}\b",
-        "EMAIL": r"[\w\.-]+@[\w\.-]+\.\w+"
-    }
-    
-    for p_type, p_regex in patterns.items():
-        for match in re.finditer(p_regex, squashed_text):
-            mark_pii(match.start(), match.end(), squashed_to_orig, p_type)
+    # 2. Точный поиск Цифр (Телефон/Дата)
+    # Помечаем только те слова, которые реально похожи на цифры, 
+    # если они стоят группой (минимум 2 подряд или через одно слово)
+    for i in range(len(vosk_words)):
+        if is_digit_like(vosk_words[i]['word']):
+            # Проверяем соседей (есть ли рядом еще цифры?)
+            has_neighbor = False
+            for offset in [-2, -1, 1, 2]:
+                if 0 <= i + offset < len(vosk_words):
+                    if is_digit_like(vosk_words[i + offset]['word']):
+                        has_neighbor = True
+                        break
+            
+            # Также помечаем ключевые слова даты, если они вплотную к цифрам
+            if has_neighbor:
+                if i not in pii_map: pii_map[i] = set()
+                pii_map[i].add("CONTACT_INFO")
+                
+                # Захватываем "года", "мая", "рождения", если они прилипли к цифрам
+                for offset in [-1, 1]:
+                    if 0 <= i + offset < len(vosk_words):
+                        w_low = vosk_words[i+offset]['word'].lower()
+                        if w_low in ['года', 'мая', 'марта', 'рождения', 'телефон']:
+                            if (i+offset) not in pii_map: pii_map[i+offset] = set()
+                            pii_map[i+offset].add("CONTACT_INFO")
 
     return pii_map

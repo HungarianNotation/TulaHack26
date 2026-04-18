@@ -1,0 +1,828 @@
+File: ./router/index.ts
+import { createRouter, createWebHistory } from "vue-router";
+import { useAuthStore } from "@/stores/auth";
+import LoginView from "@/views/LoginView.vue";
+import DashboardView from "@/views/DashboardView.vue";
+import CallDetail from "@/views/CallDetail.vue";
+
+const router = createRouter({
+  history: createWebHistory(),
+  routes: [
+    { path: "/login", component: LoginView },
+    { path: "/", component: DashboardView, meta: { requiresAuth: true } },
+    { path: "/call/:id", component: CallDetail, meta: { requiresAuth: true } },
+  ],
+});
+
+router.beforeEach((to) => {
+  const auth = useAuthStore();
+  if (to.meta.requiresAuth && !auth.isAuthenticated) return "/login";
+});
+
+export default router;
+
+
+============================================================
+
+
+File: ./App.vue
+<template>
+  <div class="min-h-screen bg-gray-50 font-sans">
+    <!-- Навигация показывается только если юзер залогинен -->
+    <nav
+      v-if="auth.isAuthenticated"
+      class="bg-white border-b sticky top-0 z-50"
+    >
+      <div
+        class="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between"
+      >
+        <div class="flex items-center gap-2">
+          <div class="bg-blue-600 p-2 rounded-lg text-white font-bold">VA</div>
+          <span class="text-xl font-bold tracking-tight">VoiceRedactor</span>
+        </div>
+        <div class="flex items-center gap-6">
+          <router-link
+            to="/"
+            class="text-gray-600 hover:text-blue-600 font-medium"
+            >Дашборд</router-link
+          >
+          <button
+            @click="handleLogout"
+            class="text-red-500 hover:bg-red-50 px-3 py-1.5 rounded-md transition text-sm font-semibold"
+          >
+            Выйти
+          </button>
+        </div>
+      </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto py-8 px-4">
+      <router-view />
+    </main>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { useAuthStore } from "./stores/auth";
+import { useRouter } from "vue-router";
+
+const auth = useAuthStore();
+const router = useRouter();
+
+const handleLogout = () => {
+  auth.logout();
+  router.push("/login");
+};
+</script>
+
+
+============================================================
+
+
+File: ./views/LoginView.vue
+<template>
+  <div class="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+    <div
+      class="bg-white p-10 rounded-3xl shadow-xl border border-gray-100 w-full max-w-md"
+    >
+      <div class="text-center mb-8">
+        <div
+          class="inline-block bg-blue-600 text-white p-4 rounded-2xl font-black text-2xl mb-4 shadow-lg shadow-blue-200"
+        >
+          VA
+        </div>
+        <h1 class="text-2xl font-black text-gray-900">С возвращением!</h1>
+        <p class="text-gray-500">Войдите в систему анонимизации</p>
+      </div>
+
+      <form @submit.prevent="onLogin" class="space-y-4">
+        <div>
+          <label
+            class="block text-xs font-bold text-gray-400 uppercase mb-1 ml-1"
+            >Логин</label
+          >
+          <input
+            v-model="form.login"
+            type="text"
+            required
+            class="w-full px-4 py-3 bg-gray-50 border-0 rounded-xl focus:ring-2 focus:ring-blue-500 transition"
+          />
+        </div>
+        <div>
+          <label
+            class="block text-xs font-bold text-gray-400 uppercase mb-1 ml-1"
+            >Пароль</label
+          >
+          <input
+            v-model="form.password"
+            type="password"
+            required
+            class="w-full px-4 py-3 bg-gray-50 border-0 rounded-xl focus:ring-2 focus:ring-blue-500 transition"
+          />
+        </div>
+        <button
+          type="submit"
+          class="w-full bg-blue-600 text-white py-4 rounded-xl font-bold hover:bg-blue-700 transition shadow-lg shadow-blue-100 active:scale-[0.98]"
+        >
+          Войти
+        </button>
+      </form>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref } from "vue";
+import { useAuthStore } from "@/stores/auth";
+import { useRouter } from "vue-router";
+
+const auth = useAuthStore();
+const router = useRouter();
+const form = ref({ login: "", password: "" });
+
+const onLogin = async () => {
+  try {
+    await auth.login(form.value);
+    router.push("/");
+  } catch (e) {
+    alert("Ошибка авторизации");
+  }
+};
+</script>
+
+
+============================================================
+
+
+File: ./views/CallDetail.vue
+<template>
+  <div v-if="call" class="max-w-4xl mx-auto space-y-8">
+    <!-- Шапка страницы -->
+    <div class="flex justify-between items-center">
+      <router-link
+        to="/"
+        class="text-sm text-gray-500 hover:text-blue-600 flex items-center gap-1 transition"
+      >
+        <ArrowLeftIcon class="w-4 h-4" /> Назад к дашборду
+      </router-link>
+
+      <div
+        v-if="call.callRecord.status !== 'COMPLETED'"
+        class="flex items-center gap-2 text-blue-600 font-bold italic"
+      >
+        <Loader2Icon class="w-4 h-4 animate-spin" />
+        Идет обработка системой...
+      </div>
+    </div>
+
+    <!-- Основной контент (когда готово) -->
+    <div
+      v-if="call.callRecord.status === 'COMPLETED'"
+      class="space-y-8 animate-in fade-in duration-500"
+    >
+      <!-- Используем наш компонент плеера -->
+      <RedactedAudioPlayer
+        :audio-url="audioUrl"
+        :segments="call.segments"
+        :duration="call.callRecord.durationSeconds"
+      />
+
+      <div class="space-y-4">
+        <h2 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+          <MessageSquareIcon class="w-5 h-5 text-blue-500" />
+          Результаты расшифровки
+        </h2>
+
+        <!-- Используем наш компонент списка транскрипта -->
+        <TranscriptList :segments="call.segments" />
+      </div>
+    </div>
+
+    <!-- Состояние ошибки -->
+    <div
+      v-else-if="call.callRecord.status === 'ERROR'"
+      class="text-center py-20 bg-red-50 rounded-3xl border border-red-100"
+    >
+      <AlertCircleIcon class="w-12 h-12 text-red-500 mx-auto mb-4" />
+      <h3 class="text-lg font-bold text-red-700">Ошибка обработки</h3>
+      <p class="text-red-500 text-sm">Файл поврежден или не содержит речи.</p>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted, onUnmounted } from "vue";
+import { useRoute } from "vue-router";
+import { callService } from "@/api/call-services";
+import type { CallDetailsDto } from "@/api/types";
+
+// Импортируем компоненты
+import RedactedAudioPlayer from "@/components/RedactedAudioPlayer.vue";
+import TranscriptList from "@/components/TranscriptList.vue";
+
+// Импортируем иконки
+import {
+  ArrowLeftIcon,
+  Loader2Icon,
+  MessageSquareIcon,
+  AlertCircleIcon,
+} from "lucide-vue-next";
+
+const route = useRoute();
+const call = ref<CallDetailsDto | null>(null);
+const audioUrl = ref("");
+let timer: any = null;
+
+const fetchDetails = async () => {
+  try {
+    const data = await callService.getCallDetails(Number(route.params.id));
+    call.value = data;
+
+    if (data.callRecord.status === "COMPLETED") {
+      clearInterval(timer);
+      const audioBlob = await callService.getRedactedAudio(data.callRecord.id);
+      audioUrl.value = URL.createObjectURL(audioBlob);
+    }
+  } catch (e) {
+    console.error("Ошибка загрузки деталей:", e);
+  }
+};
+
+onMounted(() => {
+  fetchDetails();
+  timer = setInterval(fetchDetails, 3000);
+});
+
+onUnmounted(() => {
+  clearInterval(timer);
+  if (audioUrl.value) URL.revokeObjectURL(audioUrl.value); // Освобождаем память
+});
+</script>
+
+
+============================================================
+
+
+File: ./views/DashboardView.vue
+<template>
+  <div class="space-y-8">
+    <!-- Статистика -->
+    <div v-if="stats" class="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+        <p class="text-sm text-gray-500 uppercase font-bold tracking-wider">
+          Всего обработано
+        </p>
+        <p class="text-3xl font-black text-blue-600">
+          {{ stats.totalCallsProcessed }}
+        </p>
+      </div>
+      <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+        <p class="text-sm text-gray-500 uppercase font-bold tracking-wider">
+          Утечек предотвращено
+        </p>
+        <p class="text-3xl font-black text-red-500">
+          {{ stats.totalPiiIncidentsFound }}
+        </p>
+      </div>
+      <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+        <p class="text-sm text-gray-500 uppercase font-bold tracking-wider">
+          Типы данных
+        </p>
+        <p class="text-sm text-gray-600 mt-1">
+          {{ Object.keys(stats.piiTypeDistribution).join(", ") || "Нет" }}
+        </p>
+      </div>
+    </div>
+
+    <!-- Загрузка -->
+    <FileUploader @uploaded="onUploaded" />
+
+    <!-- Список -->
+    <div
+      class="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100"
+    >
+      <table class="w-full text-left">
+        <thead class="bg-gray-50 border-b">
+          <tr>
+            <th class="px-6 py-4 text-xs font-bold text-gray-400 uppercase">
+              Дата
+            </th>
+            <th class="px-6 py-4 text-xs font-bold text-gray-400 uppercase">
+              Статус
+            </th>
+            <th class="px-6 py-4 text-xs font-bold text-gray-400 uppercase">
+              Длительность
+            </th>
+            <th class="px-6 py-4"></th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          <tr
+            v-for="call in calls"
+            :key="call.id"
+            class="hover:bg-gray-50 transition"
+          >
+            <td class="px-6 py-4 text-sm font-medium">
+              {{ formatDate(call.createdAt) }}
+            </td>
+            <td class="px-6 py-4 text-sm">
+              <span
+                :class="statusStyle(call.status)"
+                class="px-2 py-1 rounded text-xs font-bold uppercase"
+              >
+                {{ call.status }}
+              </span>
+            </td>
+            <td class="px-6 py-4 text-sm text-gray-500">
+              {{ call.durationSeconds || 0 }} сек
+            </td>
+            <td class="px-6 py-4 text-right text-sm">
+              <router-link
+                :to="'/call/' + call.id"
+                class="text-blue-600 hover:underline font-bold"
+              >
+                Результаты →
+              </router-link>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted } from "vue";
+import { callService } from "@/api/call-services";
+import FileUploader from "@/components/FileUploader.vue";
+import type { CallRecordDto, StatsResponse } from "@/api/types";
+
+const calls = ref<CallRecordDto[]>([]);
+const stats = ref<StatsResponse | null>(null);
+
+const onUploaded = (id: number) => {
+  fetchData();
+};
+
+const fetchData = async () => {
+  calls.value = await callService.getMyCalls();
+  stats.value = await callService.getStats();
+};
+
+const formatDate = (date: string) => new Date(date).toLocaleString("ru-RU");
+
+const statusStyle = (status: string) => {
+  const map: Record<string, string> = {
+    COMPLETED: "bg-green-100 text-green-700",
+    TRANSCRIBING: "bg-blue-100 text-blue-700 animate-pulse",
+    ERROR: "bg-red-100 text-red-700",
+  };
+  return map[status] || "bg-gray-100 text-gray-700";
+};
+
+onMounted(fetchData);
+</script>
+
+
+============================================================
+
+
+File: ./main.ts
+import { createApp } from "vue";
+import { createPinia } from "pinia";
+import App from "./App.vue";
+import router from "./router"; // импортируем ваш роутер
+import "./assets/index.css"; // убедитесь, что файл существует или закомментируйте
+
+const app = createApp(App);
+const pinia = createPinia();
+
+app.use(pinia);
+app.use(router);
+
+app.mount("#app");
+
+
+============================================================
+
+
+File: ./stores/auth.ts
+import { defineStore } from "pinia";
+import { authService } from "@/api/auth-services";
+import type { LoginRequest, RegisterRequest } from "@/api/types";
+
+export const useAuthStore = defineStore("auth", {
+  state: () => ({
+    token: localStorage.getItem("jwt_token") || null,
+  }),
+  getters: {
+    isAuthenticated: (state) => !!state.token,
+  },
+  actions: {
+    async login(credentials: LoginRequest) {
+      const res = await authService.login(credentials);
+      this.token = res.token;
+      localStorage.setItem("jwt_token", res.token);
+    },
+    async register(data: RegisterRequest) {
+      const res = await authService.register(data);
+      this.token = res.token;
+      localStorage.setItem("jwt_token", res.token);
+    },
+    logout() {
+      authService.logout();
+      this.token = null;
+    },
+  },
+});
+
+
+============================================================
+
+
+File: ./components/TranscriptList.vue
+<template>
+  <div class="space-y-4">
+    <div
+      v-for="seg in segments"
+      :key="seg.id"
+      class="p-4 rounded-lg border transition-all"
+      :class="[
+        seg.containsPii
+          ? 'border-red-200 bg-red-50'
+          : 'border-gray-100 bg-white',
+      ]"
+    >
+      <div class="flex justify-between mb-2">
+        <span class="text-xs font-bold uppercase text-gray-400">
+          Спикер {{ seg.speakerId }} • {{ seg.startTime.toFixed(1) }}с
+        </span>
+        <div v-if="seg.containsPii" class="flex gap-1">
+          <span
+            v-for="type in seg.piiTypes"
+            :key="type"
+            class="text-[10px] bg-red-200 text-red-700 px-2 py-0.5 rounded-full"
+          >
+            {{ type }}
+          </span>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <p class="text-xs text-gray-400 mb-1">Оригинал</p>
+          <p class="text-sm italic text-gray-600">{{ seg.originalText }}</p>
+        </div>
+        <div>
+          <p class="text-xs text-gray-400 mb-1">Результат (Redacted)</p>
+          <p class="text-sm font-medium">{{ seg.redactedText }}</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import type { TranscriptSegmentDto } from "@/api/types";
+defineProps<{ segments: TranscriptSegmentDto[] }>();
+</script>
+
+
+============================================================
+
+
+File: ./components/RedactedAudioPlayer.vue
+<template>
+  <div class="bg-gray-900 rounded-2xl p-6 text-white">
+    <!-- Таймлайн с отметками PII -->
+    <div class="relative h-4 bg-gray-700 rounded-full mb-4 overflow-hidden">
+      <!-- Индикаторы PII -->
+      <div
+        v-for="seg in segments.filter((s) => s.containsPii)"
+        :key="seg.id"
+        class="absolute h-full bg-red-500 opacity-60"
+        :style="{
+          left: (seg.startTime / duration) * 100 + '%',
+          width: ((seg.endTime - seg.startTime) / duration) * 100 + '%',
+        }"
+        v-tooltip="seg.piiTypes.join(', ')"
+      ></div>
+
+      <!-- Прогресс воспроизведения -->
+      <div
+        class="absolute h-full bg-blue-500 transition-all duration-100"
+        :style="{ width: (currentTime / duration) * 100 + '%' }"
+      ></div>
+    </div>
+
+    <div class="flex items-center gap-4">
+      <button
+        @click="togglePlay"
+        class="bg-white text-black p-3 rounded-full hover:bg-blue-400"
+      >
+        <PlayIcon v-if="!isPlaying" />
+        <PauseIcon v-else />
+      </button>
+
+      <div class="flex-1">
+        <div class="text-sm font-medium">Анонимизированная запись</div>
+        <div class="text-xs text-gray-400">
+          {{ formatTime(currentTime) }} / {{ formatTime(duration) }}
+        </div>
+      </div>
+
+      <audio
+        ref="audioRef"
+        :src="audioUrl"
+        @timeupdate="onTimeUpdate"
+        @loadedmetadata="onLoaded"
+        @ended="isPlaying = false"
+      ></audio>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted } from "vue";
+import { PlayIcon, PauseIcon } from "lucide-vue-next";
+import type { TranscriptSegmentDto } from "@/api/types";
+
+const props = defineProps<{
+  audioUrl: string;
+  segments: TranscriptSegmentDto[];
+  duration: number;
+}>();
+
+const audioRef = ref<HTMLAudioElement | null>(null);
+const isPlaying = ref(false);
+const currentTime = ref(0);
+
+const togglePlay = () => {
+  if (isPlaying.value) audioRef.value?.pause();
+  else audioRef.value?.play();
+  isPlaying.value = !isPlaying.value;
+};
+
+const onTimeUpdate = () => {
+  currentTime.value = audioRef.value?.currentTime || 0;
+};
+
+const formatTime = (s: number) => {
+  const min = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${min}:${sec.toString().padStart(2, "0")}`;
+};
+</script>
+
+
+============================================================
+
+
+File: ./components/FileUploader.vue
+<template>
+  <div
+    @dragover.prevent="isDragging = true"
+    @dragleave.prevent="isDragging = false"
+    @drop.prevent="handleDrop"
+    :class="[
+      'border-2 border-dashed rounded-2xl p-10 text-center transition-all cursor-pointer',
+      isDragging
+        ? 'border-blue-500 bg-blue-50'
+        : 'border-gray-300 hover:border-blue-400',
+    ]"
+    @click="$refs.fileInput.click()"
+  >
+    <input
+      type="file"
+      ref="fileInput"
+      class="hidden"
+      @change="handleFileSelect"
+      accept="audio/*"
+    />
+    <div class="flex flex-col items-center">
+      <div
+        class="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mb-4"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          class="w-8 h-8"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+          />
+        </svg>
+      </div>
+      <h3 class="text-lg font-bold">Нажмите для загрузки записи</h3>
+      <p class="text-gray-500 text-sm">
+        или перетащите аудиофайл сюда (WAV, M4A, MP3)
+      </p>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref } from "vue";
+import { callService } from "@/api/call-services";
+
+const emit = defineEmits(["uploaded"]);
+const isDragging = ref(false);
+const fileInput = ref<HTMLInputElement | null>(null);
+
+const handleDrop = (e: DragEvent) => {
+  isDragging.value = false;
+  const file = e.dataTransfer?.files[0];
+  if (file) upload(file);
+};
+
+const handleFileSelect = (e: Event) => {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  if (file) upload(file);
+};
+
+const upload = async (file: File) => {
+  try {
+    const res = await callService.uploadAudio(file);
+    emit("uploaded", res.callRecordId);
+  } catch (e) {
+    alert("Ошибка при загрузке файла");
+  }
+};
+</script>
+
+
+============================================================
+
+
+File: ./assets/index.css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+============================================================
+
+
+File: ./api/auth-services.ts
+import axios from "axios";
+import type { AuthResponse, RegisterRequest, LoginRequest } from "./types";
+
+// Базовый URL твоего API
+const API_URL = "http://localhost:8080/api/";
+
+export const apiClient = axios.create({
+  baseURL: API_URL,
+  headers: {
+    "Content-Type": "application/json",
+  },
+});
+
+// Автоматическая подстановка токена в каждый запрос
+apiClient.interceptors.request.use((config) => {
+  if (typeof localStorage !== "undefined") {
+    const token = localStorage.getItem("jwt_token");
+    if (token && config.headers) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+  }
+  return config;
+});
+
+export const authService = {
+  // Регистрация
+  async register(data: RegisterRequest): Promise<AuthResponse> {
+    const response = await apiClient.post<AuthResponse>("auth/register", data);
+    return response.data;
+  },
+
+  // Логин
+  async login(data: LoginRequest): Promise<AuthResponse> {
+    const response = await apiClient.post<AuthResponse>("auth/login", data);
+    return response.data;
+  },
+
+  // Выход
+  logout(): void {
+    if (typeof localStorage !== "undefined") {
+      localStorage.removeItem("jwt_token");
+    }
+  },
+};
+
+
+============================================================
+
+
+File: ./api/types.ts
+// File: ./backendtest/api/types.ts
+
+// --- Авторизация ---
+export interface AuthResponse {
+  token: string;
+}
+
+export interface RegisterRequest {
+  login: string;
+  password?: string;
+  name?: string;
+  company?: string;
+}
+
+export interface LoginRequest {
+  login: string;
+  password?: string;
+}
+
+// --- Сущности API ---
+export type RecordStatus =
+  | "UPLOADED"
+  | "TRANSCRIBING"
+  | "REDACTING"
+  | "COMPLETED"
+  | "ERROR";
+
+export interface CallRecordDto {
+  id: number;
+  originalAudioPath: string;
+  durationSeconds: number;
+  status: RecordStatus;
+  createdAt: string;
+}
+
+export interface TranscriptSegmentDto {
+  id: number;
+  speakerId: number;
+  startTime: number;
+  endTime: number;
+  originalText: string;
+  redactedText: string;
+  containsPii: boolean;
+  piiTypes: string[]; // <-- ДОБАВЛЕНО ПОЛЕ
+}
+
+export interface CallDetailsDto {
+  callRecord: CallRecordDto;
+  segments: TranscriptSegmentDto[];
+}
+
+// --- Статистика ---
+export interface StatsResponse {
+  totalCallsProcessed: number;
+  totalPiiIncidentsFound: number;
+  piiTypeDistribution: Record<string, number>;
+}
+
+
+============================================================
+
+
+File: ./api/call-services.ts
+import { apiClient } from "./auth-services";
+import type { CallDetailsDto, CallRecordDto, StatsResponse } from "./types";
+
+export const callService = {
+  // 1. Загрузка файла через браузерный FormData
+  async uploadAudio(
+    file: File,
+  ): Promise<{ message: string; callRecordId: number }> {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await apiClient.post("calls/upload", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    return response.data;
+  },
+
+  async getMyCalls(): Promise<CallRecordDto[]> {
+    const response = await apiClient.get<CallRecordDto[]>("calls/my");
+    return response.data;
+  },
+
+  async getCallDetails(id: number): Promise<CallDetailsDto> {
+    const response = await apiClient.get<CallDetailsDto>(`calls/${id}`);
+    return response.data;
+  },
+
+  async getRedactedAudio(id: number): Promise<Blob> {
+    const response = await apiClient.get(`calls/${id}/audio/redacted`, {
+      responseType: "blob", // В браузере используем blob для аудио
+    });
+    return response.data;
+  },
+
+  async getStats(): Promise<StatsResponse> {
+    const response = await apiClient.get<StatsResponse>("calls/stats");
+    return response.data;
+  },
+};
+
+
+============================================================
+
+

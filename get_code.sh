@@ -5,7 +5,7 @@ OUTPUT_FILE="all_code.txt"
 
 # Find all .ts, .tsx, and .java files, excluding specified directories,
 # and append their path and content to the output file.
-find . -type f \( -name "*.ts" -o -name "*.py" -o -name "*.java" \) \
+find . -type f \( -name "*.py" \) \
 -not -path "./.git/*" \
 -not -path "./frontend/node_modules/*" \
 -not -path "./backend/target/*" \
