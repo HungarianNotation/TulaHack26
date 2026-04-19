@@ -1,36 +1,28 @@
-import FormData from "form-data";
-import fs from "fs";
 import { apiClient } from "./auth-services";
 import { CallDetailsDto, CallRecordDto, StatsResponse } from "./types";
 
 export const callService = {
-    // Загрузка файла
-    async uploadAudio(
-        filePath: string,
-    ): Promise<{ message: string; callRecordId: number }> {
+    async uploadAudioFile(file: File): Promise<{ message: string; callRecordId: number }> {
         const formData = new FormData();
-        formData.append("file", fs.createReadStream(filePath));
-
-        const response = await apiClient.post<{
-        message: string;
-        callRecordId: number;
-        }>("calls/upload", formData, { headers: { ...formData.getHeaders() } });
+        formData.append("file", file);
+        const response = await apiClient.post<{ message: string; callRecordId: number }>(
+        "calls/upload",
+        formData,
+        { headers: { "Content-Type": "multipart/form-data" } }
+        );
         return response.data;
     },
 
-    // Получение всех звонков
     async getMyCalls(): Promise<CallRecordDto[]> {
         const response = await apiClient.get<CallRecordDto[]>("calls/my");
         return response.data;
     },
 
-    // Получение деталей звонка (с транскриптом)
     async getCallDetails(id: number): Promise<CallDetailsDto> {
         const response = await apiClient.get<CallDetailsDto>(`calls/${id}`);
         return response.data;
     },
 
-    // Скачивание анонимизированного аудио
     async getRedactedAudio(id: number): Promise<Buffer> {
         const response = await apiClient.get(`calls/${id}/audio/redacted`, {
         responseType: "arraybuffer",
@@ -38,9 +30,15 @@ export const callService = {
         return response.data;
     },
 
-    // Получение статистики (ДОБАВЛЕНО)
     async getStats(): Promise<StatsResponse> {
         const response = await apiClient.get<StatsResponse>("calls/stats");
         return response.data;
     },
+
+    async getOriginalAudio(id: number): Promise<ArrayBuffer> {
+        const response = await apiClient.get(`calls/${id}/audio/original`, {
+            responseType: "arraybuffer",
+        });
+        return response.data;
+    }
 };

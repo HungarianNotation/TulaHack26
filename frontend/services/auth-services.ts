@@ -53,3 +53,10 @@ export const testService = {
         return response.data;
     },
 };
+
+export const userService = {
+    async getProfile(): Promise<{ login: string; name?: string; company?: string }> {
+        const response = await apiClient.get<{ login: string; name?: string; company?: string }>("auth/me");
+        return response.data;
+    },
+};
