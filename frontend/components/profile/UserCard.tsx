@@ -98,7 +98,7 @@ export default function UserCard() {
 
             <button
             onClick={handleLogout}
-            className="btn btn-ghost w-full gap-2 cursor-pointer"
+            className="btn btn-secondary w-full gap-2 cursor-pointer"
             >
             <LogOut size={18} />
             Выйти
