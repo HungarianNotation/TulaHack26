@@ -2,13 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(
   request: NextRequest,
-  // В Next.js 15 params нужно распаковывать асинхронно или оставлять так в зависимости от настроек маршрутизатора
   { params }: { params: { id: string; type: string } },
 ) {
   const authHeader = request.headers.get("authorization");
   let token = authHeader?.replace("Bearer ", "");
 
-  // Берем токен из куки, который мы заботливо положили туда при логине
   if (!token) {
     const cookieToken = request.cookies.get("jwt_token")?.value;
     if (cookieToken) token = cookieToken;
@@ -18,7 +16,6 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // ИСПРАВЛЕНИЕ: Используем переменную окружения для правильного роутинга в Docker
   const backendBaseUrl = process.env.BACKEND_URL || "http://localhost:8080";
   const backendUrl = `${backendBaseUrl}/api/calls/${params.id}/audio/${params.type}`;
 
@@ -27,6 +24,8 @@ export async function GET(
       headers: {
         Authorization: `Bearer ${token}`,
       },
+      // ВАЖНО: Отключаем кэширование в Next.js
+      cache: "no-store",
     });
 
     if (!response.ok) {
@@ -43,7 +42,10 @@ export async function GET(
       headers: {
         "Content-Type": contentType,
         "Content-Disposition": `inline; filename="audio_${params.id}_${params.type}.wav"`,
-        "Cache-Control": "no-cache",
+        "Cache-Control":
+          "no-store, no-cache, must-revalidate, proxy-revalidate", // Принудительно запрещаем кэш браузеру
+        Pragma: "no-cache",
+        Expires: "0",
       },
     });
   } catch (error) {
