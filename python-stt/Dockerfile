@@ -10,4 +10,9 @@ RUN pip install fastapi uvicorn vosk natasha gigachat pydub python-multipart pyt
 
 COPY . .
 
+# Ожидаем, что модель будет примонтирована или скопирована сюда
+# Для хакатона лучше скачать vosk-model-small-ru и положить в папку python-stt/vosk-model
+
+EXPOSE 8000
+
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

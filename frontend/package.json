@@ -1,0 +1,51 @@
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.6.0",
+    "@tsparticles/engine": "^3.9.1",
+    "@tsparticles/react": "^3.0.0",
+    "@tsparticles/slim": "^3.9.1",
+    "@wavesurfer/react": "^1.0.12",
+    "axios": "^1.11.0",
+    "date-fns": "^4.1.0",
+    "framer-motion": "^12.38.0",
+    "lucide-react": "^1.8.0",
+    "next": "16.2.4",
+    "react": "19.2.4",
+    "react-audio-recorder-hook": "^1.0.7",
+    "react-dom": "19.2.4",
+    "react-dropzone": "^15.0.0",
+    "react-loader-spinner": "^8.0.2",
+    "react-tsparticles": "^2.12.2",
+    "recharts": "^3.8.1",
+    "three": "^0.184.0",
+    "tsparticles-slim": "^2.12.0",
+    "wavesurfer.js": "^7.12.6"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "daisyui": "^5.5.19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.4",
+    "msw": "^2.13.4",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  },
+  "msw": {
+    "workerDirectory": [
+      "public"
+    ]
+  }
+}

@@ -1,7 +1,6 @@
 fastapi
 uvicorn
-vosk
-natasha
-gigachat
-python-dotenv
 python-multipart
+vosk
+pydub
+natasha
