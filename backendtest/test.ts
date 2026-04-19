@@ -50,7 +50,7 @@ function generateSilentWav(filePath: string) {
   fs.writeFileSync(filePath, buffer);
 }
 
-const TEST_AUDIO_PATH = "./meow.m4a";
+const TEST_AUDIO_PATH = "./meow.mp3";
 let isGeneratedSilentFile = false;
 
 if (!fs.existsSync(TEST_AUDIO_PATH)) {
