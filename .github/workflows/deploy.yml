@@ -1,0 +1,52 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Executing remote ssh commands to deploy
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          # Помещаем секреты в переменные окружения для безопасности
+          ENV_SECRET: ${{ secrets.ENV }}
+          SSL_CERT: ${{ secrets.SSL_CERT }}
+          SSL_KEY: ${{ secrets.SSL_KEY }}
+          # Укажите SSH-адрес вашего репозитория
+          REPO_SSH: "git@github.com:${{ github.repository }}.git"
+          TARGET_DIR: "/home/denz/tulahack"
+        with:
+          host: ${{ secrets.SERVER_HOST }}     
+          username: ${{ secrets.SERVER_USER }} 
+          key: ${{ secrets.SSH_PRIVATE_KEY }}  
+          envs: ENV_SECRET,SSL_CERT,SSL_KEY,REPO_SSH,TARGET_DIR
+          script: |
+            # 1. Логика Git: клонируем или обновляем
+            if [ ! -d "$TARGET_DIR/.git" ]; then
+              echo "Directory empty. Cloning repository..."
+              git clone $REPO_SSH $TARGET_DIR
+              cd $TARGET_DIR
+            else
+              echo "Directory exists. Pulling latest changes..."
+              cd $TARGET_DIR
+              git pull
+            fi
+
+            # 2. Создаем структуру папок
+            mkdir -p nginx/ssl
+            mkdir -p nginx/static
+
+            # 3. Записываем секреты через printf %s
+            # %s гарантирует, что содержимое будет записано без искажений
+            printf "%s" "$ENV_SECRET" > .env
+            printf "%s" "$SSL_CERT" > nginx/ssl/fullchain.pem
+            printf "%s" "$SSL_KEY" > nginx/ssl/privkey.pem
+            
+            # 4. Права доступа и запуск
+            chmod 600 nginx/ssl/privkey.pem
+            
+            # docker compose pull
+            # docker compose up -d --build
