@@ -372,7 +372,7 @@ export default function RecordingsList({ calls, isLoading, error, onRetry }: Rec
                                         <button
                                             onClick={() => downloadOriginalAudio(call.id)}
                                             disabled={downloadingId === call.id}
-                                            className="btn btn-ghost btn-sm gap-2 cursor-pointer"
+                                            className="btn btn-secondary btn-sm gap-2 cursor-pointer"
                                         >
                                             {downloadingId === call.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download size={16} />}
                                             Скачать оригинал
@@ -382,7 +382,7 @@ export default function RecordingsList({ calls, isLoading, error, onRetry }: Rec
                                         <button
                                             onClick={() => downloadRedactedAudio(call.id)}
                                             disabled={downloadingId === call.id}
-                                            className="btn btn-ghost btn-sm gap-2 cursor-pointer"
+                                            className="btn btn-secondary btn-sm gap-2 cursor-pointer"
                                         >
                                             {downloadingId === call.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download size={16} />}
                                             Скачать обработанное
