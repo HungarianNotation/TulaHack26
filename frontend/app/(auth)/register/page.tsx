@@ -4,10 +4,11 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Mail, Lock, Eye, EyeOff, UserPlus, User, Building } from 'lucide-react';
 import Link from 'next/link';
-import { authService } from '@/services/auth-services';
+import { useAuth } from '@/context/AuthContext';
 
 export default function RegisterPage() {
     const router = useRouter();
+    const { register } = useAuth();
     const [login, setLogin] = useState('');
     const [name, setName] = useState('');
     const [company, setCompany] = useState('');
@@ -22,7 +23,6 @@ export default function RegisterPage() {
         e.preventDefault();
         setError('');
 
-        // Валидация
         if (!login || !password || !confirmPassword) {
             setError('Все поля обязательны для заполнения');
             return;
@@ -41,24 +41,10 @@ export default function RegisterPage() {
         }
 
         setIsLoading(true);
-
         try {
-            // Отправляем запрос на регистрацию
-            const response = await authService.register({
-                login,
-                name: name || undefined,
-                company: company || undefined,
-                password,
-            });
-
-            // Сохраняем токен
-            if (typeof window !== 'undefined') {
-                localStorage.setItem('jwt_token', response.token);
-            }
-
+            await register({ login, name: name || undefined, company: company || undefined, password });
             router.push('/profile');
         } catch (err: any) {
-            // Обработка ошибок
             if (err.response?.status === 409) {
                 setError('Пользователь с таким email уже существует');
             } else if (err.response?.status === 400) {
