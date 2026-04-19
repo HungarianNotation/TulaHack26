@@ -37,6 +37,18 @@ const getStatusConfig = (status: CallRecordDto['status']) => {
     }
 };
 
+const speakerColors = [
+  "border-sky-400/50",
+  "border-emerald-400/50",
+  "border-amber-400/50",
+  "border-violet-400/50",
+  "border-rose-400/50",
+];
+
+const getSpeakerColor = (speakerId: number) => {
+  return speakerColors[speakerId % speakerColors.length];
+};
+
 export default function RecordingsList({ calls, isLoading, error, onRetry }: RecordingsListProps) {
     const [detailedCalls, setDetailedCalls] = useState<Map<number, CallDetailsDto>>(new Map());
     const pollingIntervals = useRef<Map<number, NodeJS.Timeout>>(new Map());
@@ -501,8 +513,13 @@ export default function RecordingsList({ calls, isLoading, error, onRetry }: Rec
                                                 Транскрипт отсутствует
                                             </p>
                                         ) : (
-                                            segments.map((segment) => (
-                                                <div key={segment.id} className="border-l-2 border-custom-accent/30 pl-4 py-2">
+                                            segments.map((segment) => {
+                                                const segmentColor = segment.containsPii ? 'border-orange-500/50' : getSpeakerColor(segment.speakerId);
+                                                return (
+                                                <div key={segment.id} className={`border-l-2 pl-4 py-2 ${segmentColor}`}>
+                                                    <div className="font-bold text-xs uppercase text-custom-secondary mb-1">
+                                                        Спикер {segment.speakerId}
+                                                    </div>
                                                     <div className="text-sm text-custom-main mb-1">{segment.originalText}</div>
                                                     {segment.redactedText !== segment.originalText && (
                                                         <div className="text-sm text-custom-secondary mb-2">
@@ -512,14 +529,15 @@ export default function RecordingsList({ calls, isLoading, error, onRetry }: Rec
                                                     {segment.piiTypes && segment.piiTypes.length > 0 && (
                                                         <div className="flex flex-wrap gap-2 mt-1">
                                                             {segment.piiTypes.map((type) => (
-                                                                <span key={type} className="text-xs px-2 py-0.5 rounded-full bg-custom-accent/10 text-custom-accent">
+                                                                <span key={type} className="text-xs px-2 py-0.5 rounded-full bg-orange-500/10 text-orange-500">
                                                                     {type}
                                                                 </span>
                                                             ))}
                                                         </div>
                                                     )}
                                                 </div>
-                                            ))
+                                                )
+                                            })
                                         )}
                                     </div>
                                 )}

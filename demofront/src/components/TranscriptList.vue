@@ -7,7 +7,7 @@
       :class="[
         seg.containsPii
           ? 'border-red-200 bg-red-50'
-          : 'border-gray-100 bg-white',
+          : getSpeakerColor(seg.speakerId),
       ]"
     >
       <div class="flex justify-between mb-2">
@@ -42,4 +42,16 @@
 <script setup lang="ts">
 import type { TranscriptSegmentDto } from "@/api/types";
 defineProps<{ segments: TranscriptSegmentDto[] }>();
+
+const speakerColors = [
+  "border-sky-200 bg-sky-50",
+  "border-emerald-200 bg-emerald-50",
+  "border-amber-200 bg-amber-50",
+  "border-violet-200 bg-violet-50",
+  "border-rose-200 bg-rose-50",
+];
+
+const getSpeakerColor = (speakerId: number) => {
+  return speakerColors[speakerId % speakerColors.length];
+};
 </script>
