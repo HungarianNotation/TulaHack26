@@ -3,7 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Header } from "@/components/Header/Header";
 import GlobalParticlesProvider from "@/components/GlobalParticlesProvider";
-//import { MSWProvider } from './MSWProvider';
+import { AuthProvider } from "@/context/AuthContext";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -31,9 +31,11 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col relative">
-        <GlobalParticlesProvider />
-        <Header />
-        <main className="grow relative z-20">{children}</main>
+        <AuthProvider>
+          <GlobalParticlesProvider />
+          <Header />
+          <main className="grow relative z-20">{children}</main>
+        </AuthProvider>
       </body>
     </html>
   );
