@@ -53,7 +53,7 @@ public class SecurityConfig {
         
         // ИСПРАВЛЕНИЕ: Явно указываем доверенные домены фронтенда. 
         // Нельзя использовать "*" вместе с setAllowCredentials(true)
-        configuration.setAllowedOrigins(List.of("http://localhost:3000", "http://127.0.0.1:3000")); 
+        configuration.setAllowedOrigins(List.of("http://localhost:3000", "http://localhost:8000")); 
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH")); 
         configuration.setAllowedHeaders(List.of("*")); 
         configuration.setAllowCredentials(true); 
