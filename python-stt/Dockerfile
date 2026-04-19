@@ -1,17 +1,22 @@
 FROM python:3.10-slim
 
-# Установка ffmpeg для работы со звуком
+# Install system dependencies
 RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Установка библиотек
-RUN pip install fastapi uvicorn vosk natasha gigachat pydub python-multipart python-dotenv
+# Create a non-root user
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
 
-COPY . .
+# Install python dependencies
+COPY --chown=appuser:appgroup requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Ожидаем, что модель будет примонтирована или скопирована сюда
-# Для хакатона лучше скачать vosk-model-small-ru и положить в папку python-stt/vosk-model
+# Copy application code
+COPY --chown=appuser:appgroup . .
+
+# Switch to the non-root user
+USER appuser
 
 EXPOSE 8000
 

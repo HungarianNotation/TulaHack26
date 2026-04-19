@@ -1,19 +1,31 @@
-# Development stage
-FROM node:20-alpine AS development
+# Base image
+FROM node:20-alpine AS base
 
+# 1. Build stage
+FROM base AS builder
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+
+# 2. Production stage
+FROM base AS runner
 WORKDIR /app
 
-# Copy package.json and package-lock.json to install dependencies
-COPY package.json package-lock.json ./
-RUN npm install
+# Create a non-root user
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
-# Copy the rest of the application code
-COPY . .
+# Copy production assets from builder stage
+COPY --from=builder --chown=appuser:appgroup /app/public ./public
+COPY --from=builder --chown=appuser:appgroup /app/.next/standalone ./
+COPY --from=builder --chown=appuser:appgroup /app/.next/static ./.next/static
 
+USER appuser
 
-
-# Expose the port Next.js dev server runs on
 EXPOSE 3000
 
-# Command to run the development server
-CMD ["npm", "run", "dev"]
+ENV PORT 3000
+# Use the node server.js that is created in the standalone output
+CMD ["node", "server.js"]

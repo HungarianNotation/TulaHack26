@@ -4,3 +4,5 @@ python-multipart
 vosk
 pydub
 natasha
+gigachat
+python-dotenv

@@ -5,6 +5,17 @@ x-logging: &default-logging
     max-file: "3"
 
 services:
+  frontend:
+    build:
+      context: ./frontend
+    container_name: frontend
+    ports:
+      - "3000:3000"
+    restart: on-failure
+    logging: *default-logging
+    networks:
+      - kamp-network
+
   backend:
     build:
       context: ./backend/demo
@@ -18,7 +29,7 @@ services:
       - DB_USERNAME=${MARIADB_USER}
       - DB_PASSWORD=${MARIADB_PASSWORD}
       - JWT_SECRET=${JWT_SECRET}
-      - JAVA_OPTS=-Xms256m -Xmx768m -Xss256k -XX:MaxMetaspaceSize=128m -XX:+UseSerialGC
+      - JAVA_OPTS=-XX:MaxRAMPercentage=75.0
       - SPRING_PROFILES_ACTIVE=prod
     depends_on:
       mariadb:
@@ -26,16 +37,10 @@ services:
     restart: on-failure
     volumes:
       - ./uploads:/app/uploads
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 500M
     logging: *default-logging
     networks:
       - kamp-network
 
-  # ТЕПЕРЬ ПРАВИЛЬНО: python-stt внутри блока services
   python-stt:
     build:
       context: ./python-stt
@@ -50,16 +55,10 @@ services:
     volumes:
       - ./uploads:/app/uploads
       - ./python-stt/vosk-model:/app/vosk-model
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 500M
     logging: *default-logging
     networks:
       - kamp-network
 
-  # ТЕПЕРЬ ПРАВИЛЬНО: mariadb внутри блока services
   mariadb:
     image: mariadb:10.11
     container_name: mariadb
