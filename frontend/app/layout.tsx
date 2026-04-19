@@ -4,6 +4,7 @@ import "./globals.css";
 import { Header } from "@/components/Header/Header";
 import GlobalParticlesProvider from "@/components/GlobalParticlesProvider";
 import { AuthProvider } from "@/context/AuthContext";
+import AuthGuard from "@/components/AuthGuard";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -34,7 +35,7 @@ export default function RootLayout({
         <AuthProvider>
           <GlobalParticlesProvider />
           <Header />
-          <main className="grow relative z-20">{children}</main>
+          <main className="grow relative z-20"><AuthGuard>{children}</AuthGuard></main>
         </AuthProvider>
       </body>
     </html>
