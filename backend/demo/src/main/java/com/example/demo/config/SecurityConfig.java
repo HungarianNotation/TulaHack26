@@ -1,4 +1,3 @@
-// File: src/main/java/com/example/demo/config/SecurityConfig.java
 package com.example.demo.config;
 
 import lombok.RequiredArgsConstructor;
@@ -34,10 +33,11 @@ public class SecurityConfig {
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
             .csrf(AbstractHttpConfigurer::disable)
-            // 1. Включаем CORS и связываем с нашим конфигом (вместо disable)
+            // Включаем CORS
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/**").permitAll() 
+                .requestMatchers("/api/auth/**").permitAll() // Разрешаем доступ к авторизации
+                .requestMatchers("/api/test/**").permitAll() 
                 .requestMatchers("/error").permitAll()  
                 .anyRequest().authenticated()
             )
@@ -47,18 +47,19 @@ public class SecurityConfig {
         return http.build();
     }
 
-    // 2. Создаем бин с глобальными настройками CORS, разрешающий ВСЁ (для MVP)
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
         
-        configuration.setAllowedOriginPatterns(List.of("*")); // Разрешаем запросы с любых доменов
-        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH")); // Разрешаем все HTTP методы
-        configuration.setAllowedHeaders(List.of("*")); // Разрешаем любые заголовки (Authorization, Content-Type и т.д.)
-        configuration.setAllowCredentials(true); // Разрешаем передачу cookie и заголовков аутентификации
+        // ИСПРАВЛЕНИЕ: Явно указываем доверенные домены фронтенда. 
+        // Нельзя использовать "*" вместе с setAllowCredentials(true)
+        configuration.setAllowedOrigins(List.of("http://localhost:3000", "http://127.0.0.1:3000")); 
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH")); 
+        configuration.setAllowedHeaders(List.of("*")); 
+        configuration.setAllowCredentials(true); 
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", configuration); // Применяем ко всем маршрутам API
+        source.registerCorsConfiguration("/**", configuration); 
         return source;
     }
 }

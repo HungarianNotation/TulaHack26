@@ -5,11 +5,11 @@ OUTPUT_FILE="all_code.txt"
 
 # Find all .ts, .tsx, and .java files, excluding specified directories,
 # and append their path and content to the output file.
-find . -type f \( -name "*.java" -o -name "*.py" \) \
+find . -type f \( -name "*.java" -o -name "*.py" -o -name "*.ts" -o -name "*.tsx" \) \
 -not -path "./.git/*" \
 -not -path "./frontend/node_modules/*" \
 -not -path "./backend/target/*" \
--not -path "./backendtest/node_modules/*" \
+-not -path "./backendtest/*" \
 -not -path "./maria_db/*" \
 -not -path "./python-stt/.venv/*" \
 -print0 | while IFS= read -r -d $'\0' file; do
